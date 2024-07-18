@@ -6,6 +6,9 @@ version: 0.1.0
 required_open_webui_version: 0.3.9
 """
 
+# Documentation: https://git.agnos.is/projectmoon/open-webui-filters
+
+# System Imports
 import chromadb
 from chromadb import ClientAPI as ChromaAPI
 from chromadb import Collection as ChromaCollection

@@ -1,4 +1,16 @@
-# Memory Filter
+# OpenWebUI Filters
+
+My collection of OpenWebUI Filters.
+
+So far:
+
+ - **Memory Filter:** A basic narrative memory filter intended for
+   long-form storytelling/roleplaying scenarios. Intended as a proof
+   of concept/springboard for more advanced narrative memory.
+ - **GPU Scaling Filter:** Reduce number of GPU layers in use if Ollama
+   crashes due to running out of VRAM.
+
+## Memory Filter
 
 Super hacky, very basic automatic narrative memory filter for
 OpenWebUI, that may or may not actually enhance narrative generation!
@@ -9,7 +21,7 @@ developments in long form story writing/roleplaying scenarios, where
 context window length is limited (or ollama crashes on long context
 length models despite having 40 GB of unused memory!).
 
-## Configuration
+### Configuration
 
 The filter exposes two settings:
 
@@ -30,7 +42,7 @@ The filter hooks in to OpenWebUI's RAG settings to generate embeddings
 and query the vector database. The filter will use the same embedding
 model and ChromaDB instance that's configured in the admin settings.
 
-## Usage
+### Usage
 
 Enable the filter on a model that you want to use to generate stories.
 It is recommended, although not required, that this be the same model
@@ -47,7 +59,7 @@ filter is doing.
 Do not reply while the model is updating its knowledge base or funny
 things might happen.
 
-## Functioning
+### Function
 
 What does it do?
  - When receiving user input, generate search queries for vector DB
@@ -60,7 +72,7 @@ What does it do?
  - After receiving model narrative reply, generate character and plot
    info and stick them into the vector DB.
 
-## Limitations and Known Issues
+### Limitations and Known Issues
 
 What does it not do?
  - Handle conversational branching/regeneration. In fact, this will
@@ -68,10 +80,10 @@ What does it not do?
    - Bouncing around some ideas to fix this. Basically requires
      building a "canonical" branching story path in the database?
  - Proper context "chapter" summarization (planned to change).
- - Work properly when switching conversations due to OpenWebUI
+ - ~~Work properly when switching conversations due to OpenWebUI
    limitations. The chat ID is not available on incoming requests for
    some reason, so a janky workaround is used when processing LLM
-   responses.
+   responses.~~ Fixed! (but still in a very hacky way)
  - Clear out information of old conversations or expire irrelevant
    data.
 
@@ -84,6 +96,23 @@ Other things to do or improve:
    used, so multiple users = concurrency issues.
  - Block user input while updating the knowledgebase.
 
-## License
+## GPU Scaling Filter
+
+This is a simple filter that reduces the number of GPU layers in use
+by Ollama when it detects that Ollama has crashed (via empty response
+coming in to OpenWebUI). Right now, the logic is very basic, just
+using static numbers to reduce GPU layer counts. It doesn't take into
+account the number of layers in models or dynamically monitor VRAM
+use.
+
+There are three settings:
+ - **Initial Reduction:** Number of layers to immediately set when an
+   Ollama crash is detected. Defaults to 20.
+ - **Scaling Step:** Number of layers to reduce by on subsequent crashes
+   (down to a minimum of 0, i.e. 100% CPU inference). Defaults to 5.
+ - **Show Status:** Whether or not to inform the user that the
+   conversation is running slower due to GPU layer downscaling.
+
+# License
 
 AGPL v3.0+.
