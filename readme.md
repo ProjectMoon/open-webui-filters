@@ -149,9 +149,8 @@ the LLM's reply.
 All filters are licensed under [AGPL v3.0+][agpl]. The code is free
 software, that you can run, redistribute, modify, study, and learn
 from as you see fit, as long as you extend that same freedom to
-others, in accordance with the terms of the AGPL.
-
-Be aware how this might affect your OpenWebUI deployment, if you are
-deploying OpenWebUI in a public environment.
+others, in accordance with the terms of the AGPL. Make sure you are
+aware how this might affect your OpenWebUI deployment, if you are
+deploying OpenWebUI in a public environment!
 
 [agpl]: https://www.gnu.org/licenses/agpl-3.0.en.html
