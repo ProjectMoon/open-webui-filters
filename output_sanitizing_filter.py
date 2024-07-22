@@ -2,7 +2,7 @@
 title: Output Sanitization Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.1.0
+version: 0.1.2
 required_open_webui_version: 0.3.9
 """
 
@@ -55,4 +55,9 @@ class Filter:
         last_reply: dict = body["messages"][-1]
         last_reply = last_reply["content"].strip()
         replaced_message = strip_prefixes(last_reply, self.valves.start_removals)
-        await self.replace_message(replaced_message)
+
+        if replaced_message != last_reply:
+            body["messages"][-1]["content"] = replaced_message
+            await self.replace_message(replaced_message)
+
+        return body
