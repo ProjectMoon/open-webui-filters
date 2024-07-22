@@ -3,6 +3,7 @@ title: GPU Scaling Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
 version: 0.1.0
+license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
 
