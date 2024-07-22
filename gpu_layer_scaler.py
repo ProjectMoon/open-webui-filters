@@ -2,7 +2,7 @@
 title: GPU Scaling Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.1.0
+version: 0.2.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -85,11 +85,19 @@ def dict_to_attributes(input_dict):
     return AttrDict(input_dict)
 
 def extract_model_id(model: dict) -> Optional[str]:
+    model_id = None
+
     if "info" in model:
-        model_info = model["info"]
-        return model_info["base_model_id"] if "base_model_id" in model_info else model["id"]
+        if "base_model_id" in model["info"]:
+            model_id = model["info"]["base_model_id"]
     else:
-        return None
+        if "ollama" in model and "id" in model["ollama"]:
+            model_id = model["ollama"]["id"]
+
+    if not model_id:
+        model_id = model["id"]
+
+    return model_id
 
 def extract_session_info(event_emitter) -> Optional[SessionInfo]:
     """The latest innovation in hacky workarounds."""
@@ -171,10 +179,15 @@ class Filter:
         # parameter. if this is a subsequent failure (we have entry
         # for this chat already), reduce by the step valve parameter,
         # to a minimum of CPU (100% cpu).
+        model_id = extract_model_id(model)
+
+        if not model_id:
+            print("Could not extract model ID for GPU downscaling!")
+            return
+
         await self.send_message_adjusting(False)
         gpu_layer_info = GpuChatState(CHROMA_CLIENT, self.session_info.chat_id)
         num_layers = self.get_num_layers_for_model(gpu_layer_info, model)
-        print(f"num layers is {num_layers}")
         downscale_steps = 0
 
         if num_layers:
@@ -186,13 +199,11 @@ class Filter:
         else:
             num_layers = self.valves.reduction_start
 
-        model_id = extract_model_id(model)
-        if model_id:
-            gpu_layer_info.set_gpu_layers(model_id, num_layers)
-            await self.send_message_adjusting(True, amount=num_layers, steps=downscale_steps)
-            print(
-                f"Set GPU layers for chat {self.session_info.chat_id} to {num_layers}"
-            )
+        gpu_layer_info.set_gpu_layers(model_id, num_layers)
+        await self.send_message_adjusting(True, amount=num_layers, steps=downscale_steps)
+        print(
+            f"Set GPU layers for chat {self.session_info.chat_id} to {num_layers}"
+        )
 
     async def inlet(
         self,
@@ -201,19 +212,25 @@ class Filter:
         __model__: Optional[dict] = None,
     ) -> dict:
         """Intercept incoming messages and downscale if necessary."""
+        if not __model__ or __model__["owned_by"] != "ollama":
+            return body
+
         self.event_emitter = __event_emitter__
         self.session_info = extract_session_info(__event_emitter__)
 
-        if self.session_info and __model__:
-            model_id = extract_model_id(__model__)
+        if self.session_info:
             gpu_layer_info = GpuChatState(CHROMA_CLIENT, self.session_info.chat_id)
             num_layers = self.get_num_layers_for_model(gpu_layer_info, __model__)
 
             if num_layers and "options" in body:
+                model_id = extract_model_id(__model__)
                 body["options"]["num_gpu"] = num_layers
                 if self.valves.show_status:
                     await self.send_message_downscaled()
-                print(f"Downscaled GPU layers for incoming request for {model_id} to {num_layers}")
+                print((
+                    f"Downscaled GPU layers for incoming request for {model_id} "
+                    f"to {num_layers}"
+                ))
 
         return body
 
@@ -225,6 +242,9 @@ class Filter:
         __model__: Optional[dict] = None,
     ) -> dict:
         """On response failure, downscale the GPU layers for next try."""
+        if not __model__ or __model__["owned_by"] != "ollama":
+            return body
+
         self.event_emitter = __event_emitter__
         self.session_info = extract_session_info(__event_emitter__)
 
