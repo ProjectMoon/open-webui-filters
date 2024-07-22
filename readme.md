@@ -11,6 +11,8 @@ So far:
    of concept/springboard for more advanced narrative memory.
  - **GPU Scaling Filter:** Reduce number of GPU layers in use if Ollama
    crashes due to running out of VRAM.
+ - **Output Sanitization Filter:** Remove words, phrases, or
+   characters from the start of model replies.
 
 ## Memory Filter
 
@@ -95,7 +97,7 @@ Other things to do or improve:
    events, instead of dumping it all into the vector DB.
  - Improve multi-user handling. Should technically sort of work due to
    messages having UUIDs, but is a bit messy. Only one collection is
-   used, so multiple users = concurrency issues.
+   used, so multiple users = concurrency issues?
  - Block user input while updating the knowledgebase.
 
 ## GPU Scaling Filter
@@ -108,6 +110,7 @@ account the number of layers in models or dynamically monitor VRAM
 use.
 
 There are three settings:
+
  - **Initial Reduction:** Number of layers to immediately set when an
    Ollama crash is detected. Defaults to 20.
  - **Scaling Step:** Number of layers to reduce by on subsequent crashes
@@ -115,6 +118,40 @@ There are three settings:
  - **Show Status:** Whether or not to inform the user that the
    conversation is running slower due to GPU layer downscaling.
 
+## Output Sanitization Filter
+
+This filter is intended for models that often output unwanted
+characters or terms at the beginning of replies. I have noticed this
+especially with Beyonder V3 and related models. They sometimes output
+a `":"` or `"Name:"` in front of replies. For example, if system prompt is
+`"You are Quinn, a helpful assistant."` the model will often reply with
+`"Quinn:"` as its first word.
+
+There is one setting:
+
+ - **Terms:** List of terms or characters to remove. This is a list,
+   and in the UI, each item should be separated by a comma.
+
+For the above example, the setting textbox should have `:,Quinn:` in
+it, to remove a single colon from the start of replies, and `Quinn:`
+from the start of replies.
+
+### Other Notes
+
+Terms are removed in the order defined by the setting. The filter
+loops through each term and attempts to remove it from the start of
+the LLM's reply.
+
 # License
 
-AGPL v3.0+.
+<img src="./agplv3.png" alt="AGPLv3" />
+
+All filters are licensed under [AGPL v3.0+][agpl]. The code is free
+software, that you can run, redistribute, modify, study, and learn
+from as you see fit, as long as you extend that same freedom to
+others, in accordance with the terms of the AGPL.
+
+Be aware how this might affect your OpenWebUI deployment, if you are
+deploying OpenWebUI in a public environment.
+
+[agpl]: https://www.gnu.org/licenses/agpl-3.0.en.html
