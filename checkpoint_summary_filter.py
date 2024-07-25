@@ -691,7 +691,7 @@ class Filter:
         await self.send_message("Deleted all checkpoint for chat.")
 
         body["messages"][-1]["content"] = (
-            "Respond ony with: 'Deleted all checkpoint for chat.'"
+            "Respond ony with: 'Deleted all checkpoints for chat.'"
         )
 
         body["messages"] = body["messages"][-1:]
