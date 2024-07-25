@@ -53,7 +53,8 @@ part of a story or role-playing session.
 Summarize the important parts of the given chat between the user and the
 assistant. Limit your summary to one paragraph. Make sure your summary is
 detailed. Write the summary as if you are summarizing part of a larger
-conversation.
+conversation. Do not refer to "you" or "me" in the summary. Write in the
+third person perspective.
 
 If the conversation is a regular chat, write your summary referring to the
 ongoing conversation as a chat. If the conversation is a regular chat, refer
@@ -559,7 +560,7 @@ class Filter:
         # the current context limit.
         summarizer_model = self.valves.summarizer_model_id
         if is_big_convo(message_chain, num_ctx) and self.valves.summarize_large_contexts:
-            print("Summarizing LARGE context!")
+            print(f"[{self.session_info.chat_id}] Summarizing LARGE context!")
             summarizer_model = self.valves.large_summarizer_model_id
 
 
@@ -574,10 +575,10 @@ class Filter:
         try:
             slug = await checkpointer.create_checkpoint()
             await self.set_summarizing_status(done=True)
-            print(("Summarization checkpoint created in chat "
-                   f"'{self.session_info.chat_id}': {slug}"))
+            print((f"[{self.session_info.chat_id}] Summarization checkpoint created: "
+                   f"{slug}"))
         except Exception as e:
-            print(f"Error creating summary: {str(e)}")
+            print(f"[{self.session_info.chat_id}] Error creating summary: {str(e)}")
             await self.set_summarizing_status(
                 done=True, message=f"Error summarizing: {str(e)}"
             )
