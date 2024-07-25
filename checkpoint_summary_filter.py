@@ -45,8 +45,6 @@ EmbeddingFunc = NewType('EmbeddingFunc', Callable[[str], List[Any]])
 
 # Prompts
 SUMMARIZER_PROMPT = """
-### Main Instructions
-
 You are a chat conversation summarizer. Your task is to summarize the given
 portion of an ongoing conversation. First, determine if the conversation is
 a regular chat between the user and the assistant, or if the conversation is
@@ -57,18 +55,18 @@ assistant. Limit your summary to one paragraph. Make sure your summary is
 detailed. Write the summary as if you are summarizing part of a larger
 conversation.
 
-### Regular Chat
-
 If the conversation is a regular chat, write your summary referring to the
-ongoing conversation as a chat. Refer to the user and the assistant as user
-and assistant. Do not refer to yourself as the assistant.
-
-### Story or Role-Playing Session
+ongoing conversation as a chat. If the conversation is a regular chat, refer
+to the user and the assistant as user and assistant. If the conversation is
+a regular chat, do not refer to yourself as the assistant. Do not make up a
+name for the user. If the conversation is a regular chat, summarize all
+important parts of the chat.
 
 If the conversation is a story or role-playing session, write your summary
-referring to the conversation as an ongoing story. Do not refer to the user
-or assistant in your summary. Only use the names of the characters, places,
-and events in the story.
+referring to the conversation as an ongoing story. If the conversation is a
+story or roleplaying session, do not refer to the useror assistant in your
+summary. If the conversation is a story or roleplaying sesison, only use the
+names of the characters, places, and events in the story.
 """.replace("\n", " ").strip()
 
 class Message(TypedDict):
@@ -104,7 +102,7 @@ class Summarizer(BaseModel):
         sys_message: Message = { "role": "system", "content": SUMMARIZER_PROMPT }
         user_message: Message = {
             "role": "user",
-            "content": "Make a detailed summary of everything up to this point."
+            "content": "Make a detailed summary of the conversation up to this point."
         }
 
         messages = [sys_message] + self.messages + [user_message]
