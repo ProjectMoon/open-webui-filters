@@ -313,8 +313,13 @@ def is_big_convo(messages, num_ctx: int=8192) -> bool:
     """
     for message in messages:
         if "info" in message:
-            tokens_used = (message["info"]["eval_count"] +
-                           message["info"]["prompt_eval_count"])
+            eval_count = (message["info"]["eval_count"]
+                                 if "eval_count" in message["info"]
+                                 else 0)
+            prompt_eval_count = (message["info"]["prompt_eval_count"]
+                                 if "prompt_eval_count" in message["info"]
+                                 else 0)
+            tokens_used = eval_count + prompt_eval_count
         else:
             tokens_used = 0
 
@@ -343,8 +348,11 @@ def hit_context_limit(
     last_message = messages[-1]
     tokens_used = 0
     if "info" in last_message:
-        tokens_used = (last_message["info"]["eval_count"] +
-                       last_message["info"]["prompt_eval_count"])
+        eval_count = (last_message["info"]["eval_count"]
+                      if "eval_count" in last_message["info"] else 0)
+        prompt_eval_count = (last_message["info"]["prompt_eval_count"]
+                      if "prompt_eval_count" in last_message["info"] else 0)
+        tokens_used = eval_count + prompt_eval_count
 
     if tokens_used >= (num_ctx - wiggle_room):
         amount_over = tokens_used - num_ctx
@@ -604,6 +612,7 @@ class Filter:
 
         # drop old messages, reapply system prompt.
         messages = self.apply_checkpoint(checkpoint, messages)
+        print(f"[{self.session_info.chat_id}] Applying summary:\n\n{checkpoint.summary}")
         return [system_prompt] + messages
 
 
@@ -707,7 +716,7 @@ class Filter:
         if not self.session_info:
             return body
 
-        if not self.model or self.modle["owned_by"] != "ollama":
+        if not self.model or self.model["owned_by"] != "ollama":
             return body
 
         messages = body["messages"]
@@ -767,7 +776,7 @@ class Filter:
         if not self.session_info:
             return body
 
-        if not self.model or self.modle["owned_by"] != "ollama":
+        if not self.model or self.model["owned_by"] != "ollama":
             return body
 
         # super basic external command handling (delete checkpoints).
