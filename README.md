@@ -1,8 +1,8 @@
-# OpenWebUI Filters
+# OpenWebUI Filters and Tools
 
 _Mirrored at Github: https://github.com/ProjectMoon/open-webui-filters_
 
-My collection of OpenWebUI Filters.
+My collection of OpenWebUI Filters and Tools.
 
 So far:
 
@@ -15,6 +15,8 @@ So far:
    crashes due to running out of VRAM.
  - **Output Sanitization Filter:** Remove words, phrases, or
    characters from the start of model replies.
+ - **OpenStreetMap Tool:** Tool for querying OpenStreetMap to look up
+   address details and nearby points of interest.
 
 ## Checkpoint Sumarization Filter
 
@@ -219,6 +221,28 @@ Terms are removed in the order defined by the setting. The filter
 loops through each term and attempts to remove it from the start of
 the LLM's reply.
 
+## OpenStreetMap Tool
+
+A tool that can find certain points of interest (POIs) nearby a
+requested address or place.
+
+There are currently four settings:
+ - **User Agent:** The custom user agent to set for OSM and Overpass
+   Turbo API requests.
+ - **From Header:** The email address for the From header for OSM and
+   Overpass API requests.
+ - **Nominatim API URL:** URL of the API endpoint for Nominatim, the
+   reverse geocoding (address lookup) service. Defaults to the public
+   instance.
+ - **Overpass Turbo API URL:** URL of the API endpoint for Overpass
+   Turbo, for searching OpenStreetMap. Defaults to the public
+   endpoint.
+
+The tool **will not run** without the User Agent and From headers set.
+This is because the public instance of the Nominatim API will block
+you if you do not set these. Use of the public Nominatim instance is
+governed by their [terms of use][nom-tou].
+
 # License
 
 <img src="./agplv3.png" alt="AGPLv3" />
@@ -232,3 +256,4 @@ deploying OpenWebUI in a public environment!
 
 [agpl]: https://www.gnu.org/licenses/agpl-3.0.en.html
 [checkpoint-filter]: #checkpoint-summarization-filter
+[nom-tou]: https://operations.osmfoundation.org/policies/nominatim/
