@@ -188,7 +188,7 @@ class OsmSearcher:
 
                 # use results from overpass, but if they do not exist,
                 # fall back to the nominatim result. we can get away
-                # with this because we're not diggin through the
+                # with this because we're not digging through the
                 # objects themselves (as long as they have lat/lon, we
                 # are good).
                 things_nearby = (overpass_result ['elements']
