@@ -272,7 +272,11 @@ class Tools:
         """
         searcher = OsmSearcher(self.valves)
         try:
-            return searcher.nominatim_search(address_or_place)
+            result = searcher.nominatim_search(address_or_place)
+            if result:
+                return str(result)
+            else:
+                return NO_RESULTS
         except Exception as e:
             print(e)
             return (f"There are no results due to an error. "
