@@ -1,5 +1,8 @@
 # OpenStreetMap Tool
 
+**0.2.4:**
+ - Actually make use of the limit parameter when searching Nominatim.
+
 **0.2.3:**
  - Allow leisure tags in nominatim fallback results.
 
