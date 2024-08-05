@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.4
+version: 0.2.5
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -21,6 +21,14 @@ of use: https://operations.osmfoundation.org/policies/nominatim/
 NO_RESULTS = ("No results found. Tell the user you found no results. "
               "Do not make up answers or hallucinate. Only say you "
               "found no results.")
+
+NO_CONFUSION = ("**IMPORTANT!:** Check that the results match the location "
+                "the user is talking about, by analyzing the conversation history. "
+                "Sometimes there are places with the same "
+                "names, but in different cities or countries. If the results are for "
+                "a different city or country than the user is interested in, say so: "
+                "tell the user that the results are for the wrong place, and tell them "
+                "to be more specific in their query.")
 
 def way_has_info(way):
     """
@@ -268,10 +276,12 @@ class OsmSearcher:
                     f' - Example: You can find it on [OpenStreetMap]({example_link})'
                     "\n\nAnd so on.\n\n"
                     "Only use relevant results. If there are no relevant results, "
-                    "say so. Do not make up answers or hallucinate."
+                    "say so. Do not make up answers or hallucinate. "
+                    f"\n\n{NO_CONFUSION}\n\n"
                     "The primary results are below. "
                     "Remember that the CLOSEST result is first, and you should use "
-                    "that result first."
+                    "that result first. "
+                    "Prioritize OSM **nodes** over **ways** and **relations**."
                     "\n\n----------\n\n"
                     f"{str(things_nearby)}"
                     f"{extra_info}"
@@ -340,7 +350,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby grocery stores or supermarkets, if found.
         """
         searcher = OsmSearcher(self.valves)
@@ -352,7 +362,7 @@ class Tools:
         Finds bakeries on OpenStreetMap near a given place or
         address. The location of the address or place is reverse
         geo-coded, then nearby results are fetched from OpenStreetMap.
-        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby bakeries, if found.
         """
         searcher = OsmSearcher(self.valves)
@@ -365,7 +375,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby restaurants, eateries, etc, if found.
         """
         tags = [
@@ -388,7 +398,7 @@ class Tools:
         activities on OpenStreetMap near a given place or address. The location
         of the address or place is reverse geo-coded, then nearby results are fetched
         from OpenStreetMap.
-        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of swimming poools or places, if found.
         """
         tags = [
@@ -407,7 +417,7 @@ class Tools:
         activities on OpenStreetMap near a given place or address. The location
         of the address or place is reverse geo-coded, then nearby results are fetched
         from OpenStreetMap.
-        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of recreational places, if found.
         """
         tags = [
@@ -429,7 +439,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby places of worship, if found.
         """
         tags = ["amenity=place_of_worship"]
@@ -443,7 +453,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby accommodation, if found.
         """
         tags = [

@@ -1,5 +1,10 @@
 # OpenStreetMap Tool
 
+**0.2.5:**
+ - Better accuracy in turn by turn conversations: model encouraged to
+   specify the name of the city and country when searching, so it's
+   less likely to report results from a different country.
+
 **0.2.4:**
  - Actually make use of the limit parameter when searching Nominatim.
 
