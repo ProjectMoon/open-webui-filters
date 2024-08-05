@@ -173,7 +173,8 @@ class OsmSearcher:
                 {search}
             );
             out qt;
-        """'
+        """
+
         print(query)
         data = { "data": query }
         response = requests.get(url, params=data, headers=headers)
