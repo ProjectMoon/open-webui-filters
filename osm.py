@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.0
+version: 0.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -173,7 +173,7 @@ class OsmSearcher:
                 {search}
             );
             out qt;
-        """
+        """'
         print(query)
         data = { "data": query }
         response = requests.get(url, params=data, headers=headers)
@@ -219,14 +219,10 @@ class OsmSearcher:
                 }
 
                 nodes, ways  = self.overpass_search(place, tags, bbox, limit, radius)
-                print(nodes)
-                print(ways)
 
                 # use results from overpass, but if they do not exist,
-                # fall back to the nominatim result. we can get away
-                # with this because we're not digging through the
-                # objects themselves (as long as they have lat/lon, we
-                # are good).
+                # fall back to the nominatim result. this may or may
+                # not be a good idea.
                 things_nearby = (nodes
                                  if len(nodes) > 0
                                  else OsmSearcher.fallback(nominatim_result))
@@ -235,13 +231,23 @@ class OsmSearcher:
                 things_nearby = sort_by_closeness(origin, things_nearby)
                 things_nearby = things_nearby[:limit]
                 other_results = ways[:(limit+5)]
-                print(other_results)
 
                 if not things_nearby or len(things_nearby) == 0:
                     return NO_RESULTS
 
                 tag_type_str = ", ".join(tags)
                 example_link = "https://www.openstreetmap.org/#map=19/<lat>/<lon>"
+
+                if len(other_results) > 0:
+                    extra_info = (
+                        "\n\n----------\n\n"
+                        f"Additionally, here are some other results that might be useful. "
+                        "The exact distance from the requested location is not known. "
+                        "The seconary results are below."
+                        "\n\n----------\n\n"
+                        f"{str(other_results)}")
+                else:
+                    extra_info = ""
 
                 return (
                     f"These are some of the {tag_type_str} points of interest nearby. "
@@ -261,13 +267,12 @@ class OsmSearcher:
                     "\n\nAnd so on.\n\n"
                     "Only use relevant results. If there are no relevant results, "
                     "say so. Do not make up answers or hallucinate."
-                    f"The primary results are below.\n\n"
-                    "----------"
-                    f"\n\n{str(things_nearby)}\n\n"
-                    "----------\n\n"
-                    f"Additionally, here are some other results that might be useful. "
-                    "The exact distance to these from the requested location is not known."
-                    f"\n\n{str(other_results)}"
+                    "The primary results are below. "
+                    "Remember that the CLOSEST result is first, and you should use "
+                    "that result first."
+                    "\n\n----------\n\n"
+                    f"{str(things_nearby)}"
+                    f"{extra_info}"
                 )
             else:
                 return NO_RESULTS

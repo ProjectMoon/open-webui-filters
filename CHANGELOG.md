@@ -1,5 +1,9 @@
 # OpenStreetMap Tool
 
+**0.2.1:**
+ - Only print secondary results if they exist.
+ - Remove extraneous print logging.
+
 **0.2.0:**
  - Include Ways as secondary information for improved search results.
  - Added searching for swimming and recreational areas.
