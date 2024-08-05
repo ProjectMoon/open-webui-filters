@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.1.0
+version: 0.2.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -21,6 +21,20 @@ of use: https://operations.osmfoundation.org/policies/nominatim/
 NO_RESULTS = ("No results found. Tell the user you found no results. "
               "Do not make up answers or hallucinate. Only say you "
               "found no results.")
+
+def way_has_info(way):
+    """
+    Determine if an OSM way entry is useful to us. This means it
+    has something more than just its main classification tag, and
+    has at least a name.
+    """
+
+    return len(way['tags']) > 1 and any('name' in tag for tag in way['tags'])
+
+def strip_nodes_from_way(way):
+    if 'nodes' in way:
+        del way['nodes']
+    return way
 
 def get_bounding_box_center(bbox):
     def convert(bbox, key):
@@ -102,7 +116,7 @@ class OsmSearcher:
                 else [])
 
 
-    def nominatim_search(self, query, format="json") -> Optional[dict]:
+    def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
         url = self.valves.nominatim_url
         params = {
             'q': query,
@@ -122,13 +136,15 @@ class OsmSearcher:
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
 
-            return data[0]
+            return data[:limit]
         else:
             print(response.text)
             return None
 
 
-    def overpass_search(self, place, tags, bbox, limit=5, radius=4000):
+    def overpass_search(
+            self, place, tags, bbox, limit=5, radius=4000
+    ) -> (List[dict], List[dict]):
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
@@ -141,11 +157,10 @@ class OsmSearcher:
         search_groups = [f'"{tag_type}"~"{"|".join(values)}"'
                          for tag_type, values in tag_groups.items()]
 
-        # only search nodes, which are guaranteed to have a lat and lon.
         searches = []
         for search_group in search_groups:
             searches.append(
-                f'node[{search_group}]{around}'
+                f'nwr[{search_group}]{around}'
             )
 
         search = ";\n".join(searches)
@@ -163,20 +178,39 @@ class OsmSearcher:
         data = { "data": query }
         response = requests.get(url, params=data, headers=headers)
         if response.status_code == 200:
-            return response.json()
+            # nodes are prioritized because they have exact GPS
+            # coordinates. we also include useful way entries (without
+            # node list) as secondary results, because there are often
+            # useful results that don't have a node (e.g. building or
+            # whole area marked for the tag type).
+            results = response.json()
+            results = results['elements'] if 'elements' in results else []
+            nodes = []
+            ways = []
+
+            for res in results:
+                if 'type' not in res:
+                    continue
+                if res['type'] == 'node':
+                    nodes.append(res)
+                elif res['type'] == 'way' and way_has_info(res):
+                    ways.append(strip_nodes_from_way(res))
+
+            return nodes, ways
         else:
             print(response.text)
             raise Exception(f"Error calling Overpass API: {response.text}")
 
 
-    def search_nearby(self, place: str, tags: List[str], limit: int=5) -> str:
+    def search_nearby(self, place: str, tags: List[str], limit: int=5, radius: int=4000) -> str:
         headers = self.create_headers()
         if not headers:
             return VALVES_NOT_SET
 
         try:
-            nominatim_result = self.nominatim_search(place)
+            nominatim_result = self.nominatim_search(place, limit=1)
             if nominatim_result:
+                nominatim_result = nominatim_result[0]
                 bbox = {
                     'min_lat': nominatim_result['boundingbox'][0],
                     'max_lat': nominatim_result['boundingbox'][1],
@@ -184,21 +218,24 @@ class OsmSearcher:
                     'max_lon': nominatim_result['boundingbox'][3]
                 }
 
-                overpass_result  = self.overpass_search(place, tags, bbox, limit)
+                nodes, ways  = self.overpass_search(place, tags, bbox, limit, radius)
+                print(nodes)
+                print(ways)
 
                 # use results from overpass, but if they do not exist,
                 # fall back to the nominatim result. we can get away
                 # with this because we're not digging through the
                 # objects themselves (as long as they have lat/lon, we
                 # are good).
-                things_nearby = (overpass_result ['elements']
-                                 if 'elements' in overpass_result
-                                 and len(overpass_result ['elements']) > 0
+                things_nearby = (nodes
+                                 if len(nodes) > 0
                                  else OsmSearcher.fallback(nominatim_result))
 
                 origin = get_bounding_box_center(bbox)
                 things_nearby = sort_by_closeness(origin, things_nearby)
                 things_nearby = things_nearby[:limit]
+                other_results = ways[:(limit+5)]
+                print(other_results)
 
                 if not things_nearby or len(things_nearby) == 0:
                     return NO_RESULTS
@@ -208,6 +245,7 @@ class OsmSearcher:
 
                 return (
                     f"These are some of the {tag_type_str} points of interest nearby. "
+                    "These are the results known to be closest to the requested location. "
                     "When telling the user about them, make sure to report "
                     "all the information (address, contact info, website, etc).\n\n"
                     "Tell the user about ALL the results, and give the CLOSEST result "
@@ -223,9 +261,13 @@ class OsmSearcher:
                     "\n\nAnd so on.\n\n"
                     "Only use relevant results. If there are no relevant results, "
                     "say so. Do not make up answers or hallucinate."
-                    f"The results are below.\n\n"
+                    f"The primary results are below.\n\n"
                     "----------"
-                    f"\n\n{str(things_nearby)}"
+                    f"\n\n{str(things_nearby)}\n\n"
+                    "----------\n\n"
+                    f"Additionally, here are some other results that might be useful. "
+                    "The exact distance to these from the requested location is not known."
+                    f"\n\n{str(other_results)}"
                 )
             else:
                 return NO_RESULTS
@@ -272,7 +314,7 @@ class Tools:
         """
         searcher = OsmSearcher(self.valves)
         try:
-            result = searcher.nominatim_search(address_or_place)
+            result = searcher.nominatim_search(address_or_place, limit=5)
             if result:
                 return str(result)
             else:
@@ -331,6 +373,47 @@ class Tools:
         ]
         searcher = OsmSearcher(self.valves)
         return searcher.search_nearby(place, tags, limit=5)
+
+
+    def find_swimming_near_place(self, place: str) -> str:
+        """
+        Finds swimming pools, water parks, swimming areas, and other aquatic
+        activities on OpenStreetMap near a given place or address. The location
+        of the address or place is reverse geo-coded, then nearby results are fetched
+        from OpenStreetMap.
+        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :return: A list of swimming poools or places, if found.
+        """
+        tags = [
+            "leisure=swimming_pool",
+            "leisure=swimming_area",
+            "leisure=water_park",
+            "tourism=theme_park"
+        ]
+        searcher = OsmSearcher(self.valves)
+        return searcher.search_nearby(place, tags, limit=5, radius=10000)
+
+
+    def find_recreation_near_place(self, place: str) -> str:
+        """
+        Finds playgrounds, theme parks, frisbee golf, ice skating, and other recreational
+        activities on OpenStreetMap near a given place or address. The location
+        of the address or place is reverse geo-coded, then nearby results are fetched
+        from OpenStreetMap.
+        :param place: The name of a place or an address, which will be sent to Nominatim.
+        :return: A list of recreational places, if found.
+        """
+        tags = [
+            "leisure=horse_riding",
+            "leisure=ice_rink",
+            "leisure=park",
+            "leisure=playground",
+            "leisure=disc_golf_course",
+            "leisure=amusement_arcade",
+            "tourism=theme_park"
+        ]
+        searcher = OsmSearcher(self.valves)
+        return searcher.search_nearby(place, tags, limit=10, radius=10000)
 
 
     def find_place_of_worship_near_place(self, place: str) -> str:

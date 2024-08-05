@@ -1,3 +1,16 @@
+# OpenStreetMap Tool
+
+**0.2.0:**
+ - Include Ways as secondary information for improved search results.
+
+**0.1.0:**
+ - Initial release.
+
+# Checkpoint Summarization Filter
+
+**0.1.0:**
+ - Initial release.
+
 # Narrative Memory Filter
 
 **0.0.2:**

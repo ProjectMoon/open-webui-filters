@@ -223,6 +223,8 @@ the LLM's reply.
 
 ## OpenStreetMap Tool
 
+_Recommended models: Llama 3.1, Mistral Nemo Instruct._
+
 A tool that can find certain points of interest (POIs) nearby a
 requested address or place.
 
@@ -242,6 +244,11 @@ The tool **will not run** without the User Agent and From headers set.
 This is because the public instance of the Nominatim API will block
 you if you do not set these. Use of the public Nominatim instance is
 governed by their [terms of use][nom-tou].
+
+The default API services are suitable for applications with a low
+volume of traffic (absolute max 1 API call per second). If you are
+running a production service, you should set up your own Nominatim and
+Overpass services with caching.
 
 # License
 
