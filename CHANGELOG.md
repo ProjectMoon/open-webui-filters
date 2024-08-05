@@ -1,5 +1,8 @@
 # OpenStreetMap Tool
 
+**0.2.3:**
+ - Allow leisure tags in nominatim fallback results.
+
 **0.2.1:**
  - Only print secondary results if they exist.
  - Remove extraneous print logging.

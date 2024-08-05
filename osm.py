@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.1
+version: 0.2.2
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -112,6 +112,7 @@ class OsmSearcher:
         return ([nominatim_result] if 'type' in nominatim_result
                 and (nominatim_result['type'] == 'amenity'
                      or nominatim_result['type'] == 'shop'
+                     or nominatim_result['type'] == 'leisure
                      or nominatim_result['type'] == 'tourism')
                 else [])
 
