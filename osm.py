@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.3
+version: 0.2.4
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -123,7 +123,7 @@ class OsmSearcher:
             'q': query,
             'format': format,
             'addressdetails': 1,
-            'limit': 1,  # We only need the first result for the bounding box
+            'limit': limit,
         }
 
         headers = self.create_headers()
