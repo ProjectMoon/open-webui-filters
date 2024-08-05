@@ -2,6 +2,7 @@
 
 **0.2.0:**
  - Include Ways as secondary information for improved search results.
+ - Added searching for swimming and recreational areas.
 
 **0.1.0:**
  - Initial release.
