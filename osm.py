@@ -112,7 +112,7 @@ class OsmSearcher:
         return ([nominatim_result] if 'type' in nominatim_result
                 and (nominatim_result['type'] == 'amenity'
                      or nominatim_result['type'] == 'shop'
-                     or nominatim_result['type'] == 'leisure
+                     or nominatim_result['type'] == 'leisure'
                      or nominatim_result['type'] == 'tourism')
                 else [])
 
