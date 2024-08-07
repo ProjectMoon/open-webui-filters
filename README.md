@@ -2,6 +2,12 @@
 
 _Mirrored at Github: https://github.com/ProjectMoon/open-webui-filters_
 
+Documentation (HTML):
+[https://agnos.is/projects/open-webui-filters/][docs-html]
+
+Documentation (Gemini):
+[gemini://agnos.is/projects/open-webui-filters/][docs-gemini]
+
 My collection of OpenWebUI Filters and Tools.
 
 So far:
@@ -264,3 +270,5 @@ deploying OpenWebUI in a public environment!
 [agpl]: https://www.gnu.org/licenses/agpl-3.0.en.html
 [checkpoint-filter]: #checkpoint-summarization-filter
 [nom-tou]: https://operations.osmfoundation.org/policies/nominatim/
+[docs-html]: https://agnos.is/projects/open-webui-filters/
+[docs-gemini]: gemini://agnos.is/projects/open-webui-filters/
