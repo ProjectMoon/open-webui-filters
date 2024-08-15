@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.5
+version: 0.3.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -461,4 +461,30 @@ class Tools:
             "tourism=motel", "tourism=hostel"
         ]
         searcher = OsmSearcher(self.valves)
+        return searcher.search_nearby(place, tags, limit=10, radius=10000)
+
+    def find_alcohol_near_place(self, place: str) -> str:
+        """
+        Finds beer stores, liquor stores, and similar shops on OpenStreetMap
+        near a given place or address. The location of the address or place is
+        reverse geo-coded, then nearby results
+        are fetched from OpenStreetMap.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby alcohol shops, if found.
+        """
+        searcher = OsmSearcher(self.valves)
+        tags = ["shop=alcohol"]
+        return searcher.search_nearby(place, tags, limit=5)
+
+    def find_drugs_near_place(self, place: str) -> str:
+        """
+        Finds cannabis dispensaries, coffeeshops, smartshops, and similar stores on OpenStreetMap
+        near a given place or address. The location of the address or place is
+        reverse geo-coded, then nearby results
+        are fetched from OpenStreetMap.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby cannabis and smart shops, if found.
+        """
+        searcher = OsmSearcher(self.valves)
+        tags = ["shop=coffeeshop", "shop=cannabis", "shop=headshop", "shop=smartshop"]
         return searcher.search_nearby(place, tags, limit=5)
