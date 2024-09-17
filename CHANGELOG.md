@@ -1,5 +1,12 @@
 # OpenStreetMap Tool
 
+**0.5.0:**
+ - Support Way results. This makes searching much more accurate and
+   useful. Many map features are marked as "ways" (shapes on the map)
+   rather than specific points.
+ - Drop support for "secondary results," and instead return Ways that
+   have enough information to be useful.
+
 **0.4.0:**
  - Complete rewrite of search result handling to prevent incorrect OSM
    map links being generated, and bad info given.
