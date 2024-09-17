@@ -1,5 +1,8 @@
 # OpenStreetMap Tool
 
+**0.5.1:**
+ - Remove instruction to prioritize nodes over ways in search results.
+
 **0.5.0:**
  - Support Way results. This makes searching much more accurate and
    useful. Many map features are marked as "ways" (shapes on the map)

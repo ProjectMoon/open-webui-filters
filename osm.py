@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.5.0
+version: 0.5.1
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 """
@@ -62,10 +62,8 @@ def detailed_instructions(tag_type_str: str) -> str:
         "Only use relevant results. If there are no relevant results, "
         "say so. Do not make up answers or hallucinate. "
         f"\n\n{NO_CONFUSION}\n\n"
-        "The primary results are below. "
         "Remember that the CLOSEST result is first, and you should use "
-        "that result first. "
-        "Prioritize OSM **nodes** over **ways** and **relations**.\n\n"
+        "that result first.\n\n"
         "The results (if present) are below, in Markdown format."
     )
 
@@ -89,8 +87,7 @@ def simple_instructions(tag_type_str: str) -> str:
         "say so. Do not make up answers or hallucinate. "
         "Make sure that your results are in the actual location the user is talking about, "
         "and not a place of the same name in a different country."
-        "The primary results are below. "
-        "Prioritize OSM **nodes** over **ways** and **relations**."
+        "The search results are below."
     )
 
 def way_has_info(way):
