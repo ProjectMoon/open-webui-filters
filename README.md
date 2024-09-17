@@ -234,7 +234,7 @@ _Recommended models: Llama 3.1, Mistral Nemo Instruct._
 A tool that can find certain points of interest (POIs) nearby a
 requested address or place.
 
-There are currently four settings:
+There are currently five settings:
  - **User Agent:** The custom user agent to set for OSM and Overpass
    Turbo API requests.
  - **From Header:** The email address for the From header for OSM and
@@ -245,6 +245,10 @@ There are currently four settings:
  - **Overpass Turbo API URL:** URL of the API endpoint for Overpass
    Turbo, for searching OpenStreetMap. Defaults to the public
    endpoint.
+ - **Instruction Oriented Interpretation:** Controls the level of
+   detail in the instructions for interpreting results given to the
+   LLM. By default, it gives detailed instructions. Turn this setting
+   off if results are inconsistent, wrong, or missing.
 
 The tool **will not run** without the User Agent and From headers set.
 This is because the public instance of the Nominatim API will block

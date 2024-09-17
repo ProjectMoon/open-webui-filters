@@ -2,9 +2,9 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.3.0
+version: 0.4.0
 license: AGPL-3.0+
-required_open_webui_version: 0.3.9
+required_open_webui_version: 0.3.21
 """
 import json
 import math
@@ -30,13 +30,75 @@ NO_CONFUSION = ("**IMPORTANT!:** Check that the results match the location "
                 "tell the user that the results are for the wrong place, and tell them "
                 "to be more specific in their query.")
 
+# Give examples of OSM links to help prevent wonky generated links
+# with correct GPS coords but incorrect URLs.
+EXAMPLE_OSM_LINK = "https://www.openstreetmap.org/#map=19/<lat>/<lon>"
+OSM_LINK_INSTRUCTIONS = (
+    "Make friendly human-readable OpenStreetMap links when possible, "
+    "by using the latitude and longitude of the amenities: "
+    f"{EXAMPLE_OSM_LINK}\n\n"
+)
+
+def detailed_instructions(tag_type_str: str) -> str:
+    """
+    Produce detailed instructions for models good at following
+    detailed instructions.
+    """
+    return (
+        "# Detailed Search Result Instructions\n"
+        f"These are some of the {tag_type_str} points of interest nearby. "
+        "These are the results known to be closest to the requested location. "
+        "When telling the user about them, make sure to report "
+        "all the information (address, contact info, website, etc).\n\n"
+        "Tell the user about ALL the results, and give the CLOSEST result "
+        "first. The results are ordered by closeness. "
+        f"{OSM_LINK_INSTRUCTIONS}"
+        "Give map links friendly, contextual labels. Don't just print "
+        f"the naked link:\n"
+        f' - Example: You can view it on [OpenStreetMap]({EXAMPLE_OSM_LINK})\n'
+        f' - Example: Here it is on [OpenStreetMap]({EXAMPLE_OSM_LINK})\n'
+        f' - Example: You can find it on [OpenStreetMap]({EXAMPLE_OSM_LINK})\n'
+        "\n\nAnd so on.\n\n"
+        "Only use relevant results. If there are no relevant results, "
+        "say so. Do not make up answers or hallucinate. "
+        f"\n\n{NO_CONFUSION}\n\n"
+        "The primary results are below. "
+        "Remember that the CLOSEST result is first, and you should use "
+        "that result first. "
+        "Prioritize OSM **nodes** over **ways** and **relations**.\n\n"
+        "The results (if present) are below, in Markdown format."
+    )
+
+def simple_instructions(tag_type_str: str) -> str:
+    """
+    Produce simpler markdown-oriented instructions for models that do
+    better with that.
+    """
+    return (
+        "# OpenStreetMap Result Instructions\n"
+        f"These are some of the {tag_type_str} points of interest nearby. "
+        "These are the results known to be closest to the requested location. "
+        "For each result, report the following information: \n"
+        " - Name\n"
+        " - Address\n"
+        " - OpenStreetMap Link (make it a human readable link like 'View on OpenStreetMap')\n"
+        " - Contact information (address, phone, website, email, etc)\n\n"
+        "Tell the user about ALL the results, and give the CLOSEST result "
+        "first. The results are ordered by closeness. "
+        "Only use relevant results. If there are no relevant results, "
+        "say so. Do not make up answers or hallucinate. "
+        "Make sure that your results are in the actual location the user is talking about, "
+        "and not a place of the same name in a different country."
+        "The primary results are below. "
+        "Prioritize OSM **nodes** over **ways** and **relations**."
+    )
+
 def way_has_info(way):
     """
     Determine if an OSM way entry is useful to us. This means it
     has something more than just its main classification tag, and
     has at least a name.
     """
-
     return len(way['tags']) > 1 and any('name' in tag for tag in way['tags'])
 
 def strip_nodes_from_way(way):
@@ -57,7 +119,6 @@ def get_bounding_box_center(bbox):
         'lon': (min_lon + max_lon) / 2,
         'lat': (min_lat + max_lat) / 2
     }
-
 
 def haversine_distance(point1, point2):
     R = 6371  # Earth radius in kilometers
@@ -86,11 +147,113 @@ def sort_by_closeness(origin, points):
         point['distance'] = distance
     return [point for point, distance in points_with_distance]
 
+def get_or_unknown(tags: dict, *keys: str) -> str:
+    """
+    Try to extract a value from a dict by trying keys in order, or
+    return unknown if none of the keys were found.
+    """
+    for key in keys:
+        if key in tags:
+            return tags[key]
+
+    return "unknown"
+
+def parse_thing_address(tags: dict) -> str:
+    #'addr:city': 'Haarlem', 'addr:housenumber': '8', 'addr:postcode': '2012DG', 'addr:street'
+    house_number = get_or_unknown(tags, "addr:housenumber", "addr:house_number")
+    street = get_or_unknown(tags, "addr:street")
+    city = get_or_unknown(tags, "addr:city")
+    state = get_or_unknown(tags, "addr:state", "addr:province")
+    postal_code = get_or_unknown(tags,
+                                 "addr:postcode", "addr:post_code", "addr:postal_code",
+                                 "addr:zipcode", "addr:zip_code")
+
+    # Bit of a hack to make sure spacing of state is correct, whether
+    # or not it's present.
+    state = f" {state} " if state != "unknown" else " "
+
+    return f"{street} {house_number}, {city}{state}{postal_code}"
+
+def parse_and_validate_thing(thing: dict) -> Optional[dict]:
+    """
+    Parse an OSM result and make it more friendly to work with.
+    Helps remove ambiguity of the LLM interpreting the raw JSON data.
+    If there is not enough data, discard the result.
+    """
+    tags: dict = thing['tags'] if 'tags' in thing else {}
+
+    # Currently we define "enough data" as at least having lat, lon,
+    # and name.
+    if 'lat' not in thing or 'lon' not in thing or 'name' not in tags:
+        return None
+
+    friendly_thing = {}
+    address: string = parse_thing_address(tags)
+    distance: Optional[float] = thing['distance'] if 'distance' in thing else None
+    name: str = tags['name'] if 'name' in tags else str(thing['id'])
+    lat: Optional[float] = thing['lat'] if 'lat' in thing else None
+    lon: Optional[float] = thing['lon'] if 'lon' in thing else None
+
+    amenity_type: Optional[str] = (
+        tags['amenity'] if 'amenity' in tags else None
+    )
+
+    friendly_thing['name'] = name if name else "unknown"
+    friendly_thing['distance'] = "{:.3f}".format(distance) if distance else "unknown"
+    friendly_thing['address'] = address if address else "unknown"
+    friendly_thing['lat'] = lat if lat else "unknown"
+    friendly_thing['lon'] = lon if lon else "unknown"
+    friendly_thing['amenity_type'] = amenity_type if amenity_type else "unknown"
+    return friendly_thing
+
+def create_osm_link(lat, lon):
+    return EXAMPLE_OSM_LINK.replace("<lat>", str(lat)).replace("<lon>", str(lon))
+
+def convert_and_validate_results(original_location: str, things_nearby: List[dict]) -> Optional[str]:
+    """
+    Converts the things_nearby JSON into Markdown-ish results to
+    (hopefully) improve model understanding of the results. Intended
+    to stop misinterpretation of GPS coordinates when creating map
+    links. Also drops incomplete results.
+    """
+    entries = []
+    for thing in things_nearby:
+        # Convert to friendlier data, drop results without names etc.
+        # No need to instruct LLM to generate map links if we do it
+        # instead.
+        friendly_thing = parse_and_validate_thing(thing)
+        if not friendly_thing:
+            continue
+
+        map_link = create_osm_link(friendly_thing['lat'], friendly_thing['lon'])
+        entry = (f"## {friendly_thing['name']}\n"
+                 f" - Latitude: {friendly_thing['lat']}\n"
+                 f" - Longitude: {friendly_thing['lon']}\n"
+                 f" - Address: {friendly_thing['address']}\n"
+                 f" - Amenity Type: {friendly_thing['amenity_type']}\n"
+                 f" - Distance from Origin: {friendly_thing['distance']} km\n"
+                 f" - OpenStreetMap link: {map_link}\n\n"
+                 f"Raw JSON data:\n"
+                 "```json\n"
+                 f"{str(thing)}\n"
+                 "```")
+
+        entries.append(entry)
+
+    if len(entries) == 0:
+        return None
+
+    result_text = "\n\n".join(entries)
+    header = ("# Search Results\n"
+              f"Ordered by closeness to {original_location}.")
+
+    return f"{header}\n\n{result_text}"
 
 
 class OsmSearcher:
-    def __init__(self, valves):
+    def __init__(self, valves: dict, user_valves: Optional[dict]):
         self.valves = valves
+        self.user_valves = user_valves
 
     def create_headers(self) -> Optional[dict]:
         if len(self.valves.user_agent) == 0 or len(self.valves.from_header) == 0:
@@ -100,6 +263,21 @@ class OsmSearcher:
             'User-Agent': self.valves.user_agent,
             'From': self.valves.from_header
         }
+
+    def use_detailed_interpretation_mode(self) -> bool:
+        """Let user valve for instruction mode override the global setting."""
+        print(str(self.user_valves))
+        if self.user_valves:
+            print(f"Using user valve setting: {self.user_valves.instruction_oriented_interpretation}")
+            return self.user_valves.instruction_oriented_interpretation
+        else:
+            self.valves.instruction_oriented_interpretation
+
+    def get_result_instructions(self, tag_type_str: str) -> str:
+        if self.use_detailed_interpretation_mode():
+            return detailed_instructions(tag_type_str)
+        else:
+            return simple_instructions(tag_type_str)
 
     @staticmethod
     def group_tags(tags):
@@ -240,13 +418,13 @@ class OsmSearcher:
                 origin = get_bounding_box_center(bbox)
                 things_nearby = sort_by_closeness(origin, things_nearby)
                 things_nearby = things_nearby[:limit]
+                primary_results = convert_and_validate_results(place, things_nearby)
                 other_results = ways[:(limit+5)]
 
                 if not things_nearby or len(things_nearby) == 0:
                     return NO_RESULTS
 
                 tag_type_str = ", ".join(tags)
-                example_link = "https://www.openstreetmap.org/#map=19/<lat>/<lon>"
 
                 if len(other_results) > 0:
                     extra_info = (
@@ -259,33 +437,26 @@ class OsmSearcher:
                 else:
                     extra_info = ""
 
-                return (
-                    f"These are some of the {tag_type_str} points of interest nearby. "
-                    "These are the results known to be closest to the requested location. "
-                    "When telling the user about them, make sure to report "
-                    "all the information (address, contact info, website, etc).\n\n"
-                    "Tell the user about ALL the results, and give the CLOSEST result "
-                    "first. The results are ordered by closeness. "
-                    "Make friendly human-readable OpenStreetMap links when possible, "
-                    "by using the latitude and longitude of the amenities: "
-                    f"{example_link}\n\n"
-                    "Give map links friendly, contextual labels. Don't just print "
-                    f"the naked link:\n"
-                    f' - Example: You can view it on [OpenStreetMap]({example_link})'
-                    f' - Example: Here it is on [OpenStreetMap]({example_link})'
-                    f' - Example: You can find it on [OpenStreetMap]({example_link})'
-                    "\n\nAnd so on.\n\n"
-                    "Only use relevant results. If there are no relevant results, "
-                    "say so. Do not make up answers or hallucinate. "
-                    f"\n\n{NO_CONFUSION}\n\n"
-                    "The primary results are below. "
-                    "Remember that the CLOSEST result is first, and you should use "
-                    "that result first. "
-                    "Prioritize OSM **nodes** over **ways** and **relations**."
-                    "\n\n----------\n\n"
-                    f"{str(things_nearby)}"
+                # Only print the full result instructions if we
+                # actually have something.
+                if primary_results:
+                    result_instructions = self.get_result_instructions(tag_type_str)
+                else:
+                    if len(other_results) > 0:
+                        result_instructions = ("No primary results found, but there are secondary results."
+                                               "These results have less details, but still have useful "
+                                               "information.")
+                    else:
+                        result_instructions = "No results found at all. Tell the user there are no results."
+
+                resp = (
+                    f"{result_instructions}\n\n"
+                    f"{primary_results}"
                     f"{extra_info}"
                 )
+
+                print(resp)
+                return resp
             else:
                 return NO_RESULTS
         except ValueError:
@@ -297,6 +468,9 @@ class OsmSearcher:
                     f"The error was: {e}")
 
 
+def do_osm_search(valves, user_valves, place, tags, limit=5, radius=4000):
+    searcher = OsmSearcher(valves, user_valves)
+    return searcher.search_nearby(place, tags, limit=limit, radius=radius)
 
 class Tools:
     class Valves(BaseModel):
@@ -314,14 +488,25 @@ class Tools:
             default="https://overpass-api.de/api/interpreter",
             description="URL of Overpass Turbo API for searching OpenStreetMap."
         )
+        instruction_oriented_interpretation: bool = Field(
+            default=True,
+            description=("Give detailed result interpretation instructions to the model. "
+                         "Switch this off if results are inconsistent, wrong, or missing.")
+        )
         pass
 
     class UserValves(BaseModel):
+        instruction_oriented_interpretation: bool = Field(
+            default=True,
+            description=("Give detailed result interpretation instructions to the model. "
+                         "Switch this off if results are inconsistent, wrong, or missing.")
+        )
         pass
 
 
     def __init__(self):
         self.valves = self.Valves()
+        self.user_valves = None
 
     def lookup_location(self, address_or_place: str) -> str:
         """
@@ -329,7 +514,7 @@ class Tools:
         :param address_or_place: The address or place to look up.
         :return: Address details, if found. None if there's an error.
         """
-        searcher = OsmSearcher(self.valves)
+        searcher = OsmSearcher(self.valves, self.user_valves)
         try:
             result = searcher.nominatim_search(address_or_place, limit=5)
             if result:
@@ -344,7 +529,7 @@ class Tools:
                     f"Tell the user the error message.")
 
 
-    def find_grocery_stores_near_place(self, place: str) -> str:
+    def find_grocery_stores_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds supermarkets, grocery stores, and other food stores on
         OpenStreetMap near a given place or address. The location of the
@@ -353,11 +538,12 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby grocery stores or supermarkets, if found.
         """
-        searcher = OsmSearcher(self.valves)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=supermarket", "shop=grocery", "shop=convenience", "shop=greengrocer"]
-        return searcher.search_nearby(place, tags, limit=5)
+        return do_osm_search(self.valves, user_valves, place, tags)
 
-    def find_bakeries_near_place(self, place: str) -> str:
+
+    def find_bakeries_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds bakeries on OpenStreetMap near a given place or
         address. The location of the address or place is reverse
@@ -365,11 +551,11 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby bakeries, if found.
         """
-        searcher = OsmSearcher(self.valves)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=bakery"]
-        return searcher.search_nearby(place, tags, limit=5)
+        return do_osm_search(self.valves, user_valves, place, tags)
 
-    def find_food_near_place(self, place: str) -> str:
+    def find_food_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds restaurants, fast food, bars, breweries, pubs, etc on
         OpenStreetMap near a given place or address. The location of the
@@ -378,6 +564,7 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby restaurants, eateries, etc, if found.
         """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = [
             "amenity=restaurant",
             "amenity=fast_food",
@@ -388,11 +575,10 @@ class Tools:
             "amenity=biergarten",
             "amenity=canteen"
         ]
-        searcher = OsmSearcher(self.valves)
-        return searcher.search_nearby(place, tags, limit=5)
+        return do_osm_search(self.valves, user_valves, place, tags)
 
 
-    def find_swimming_near_place(self, place: str) -> str:
+    def find_swimming_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds swimming pools, water parks, swimming areas, and other aquatic
         activities on OpenStreetMap near a given place or address. The location
@@ -401,17 +587,13 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of swimming poools or places, if found.
         """
-        tags = [
-            "leisure=swimming_pool",
-            "leisure=swimming_area",
-            "leisure=water_park",
-            "tourism=theme_park"
-        ]
-        searcher = OsmSearcher(self.valves)
-        return searcher.search_nearby(place, tags, limit=5, radius=10000)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["leisure=swimming_pool", "leisure=swimming_area",
+                "leisure=water_park", "tourism=theme_park"]
+        return do_osm_search(self.valves, user_valves, place, tags, radius=10000)
 
 
-    def find_recreation_near_place(self, place: str) -> str:
+    def find_recreation_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds playgrounds, theme parks, frisbee golf, ice skating, and other recreational
         activities on OpenStreetMap near a given place or address. The location
@@ -420,20 +602,14 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of recreational places, if found.
         """
-        tags = [
-            "leisure=horse_riding",
-            "leisure=ice_rink",
-            "leisure=park",
-            "leisure=playground",
-            "leisure=disc_golf_course",
-            "leisure=amusement_arcade",
-            "tourism=theme_park"
-        ]
-        searcher = OsmSearcher(self.valves)
-        return searcher.search_nearby(place, tags, limit=10, radius=10000)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["leisure=horse_riding", "leisure=ice_rink", "leisure=park",
+                "leisure=playground", "leisure=disc_golf_course",
+                "leisure=amusement_arcade", "tourism=theme_park"]
+        return do_osm_search(self.valves, user_valves, place, tags, limit=10, radius=10000)
 
 
-    def find_place_of_worship_near_place(self, place: str) -> str:
+    def find_place_of_worship_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on
         OpenStreetMap near a given place or address. The location of the
@@ -442,12 +618,12 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby places of worship, if found.
         """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=place_of_worship"]
-        searcher = OsmSearcher(self.valves)
-        return searcher.search_nearby(place, tags, limit=5)
+        return do_osm_search(self.valves, user_valves, place, tags)
 
 
-    def find_accommodation_near_place(self, place: str) -> str:
+    def find_accommodation_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds accommodation (hotels, guesthouses, hostels, etc) on
         OpenStreetMap near a given place or address. The location of the
@@ -456,14 +632,14 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby accommodation, if found.
         """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = [
             "tourism=hotel", "tourism=chalet", "tourism=guest_house", "tourism=guesthouse",
             "tourism=motel", "tourism=hostel"
         ]
-        searcher = OsmSearcher(self.valves)
-        return searcher.search_nearby(place, tags, limit=10, radius=10000)
+        return do_osm_search(self.valves, user_valves, place, tags, limit=10, radius=10000)
 
-    def find_alcohol_near_place(self, place: str) -> str:
+    def find_alcohol_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds beer stores, liquor stores, and similar shops on OpenStreetMap
         near a given place or address. The location of the address or place is
@@ -472,11 +648,11 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby alcohol shops, if found.
         """
-        searcher = OsmSearcher(self.valves)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=alcohol"]
-        return searcher.search_nearby(place, tags, limit=5)
+        return do_osm_search(self.valves, user_valves, place, tags)
 
-    def find_drugs_near_place(self, place: str) -> str:
+    def find_drugs_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds cannabis dispensaries, coffeeshops, smartshops, and similar stores on OpenStreetMap
         near a given place or address. The location of the address or place is
@@ -485,6 +661,69 @@ class Tools:
         :param place: The name of a place or an address. City and country must be specified, if known.
         :return: A list of nearby cannabis and smart shops, if found.
         """
-        searcher = OsmSearcher(self.valves)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=coffeeshop", "shop=cannabis", "shop=headshop", "shop=smartshop"]
-        return searcher.search_nearby(place, tags, limit=5)
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_schools_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds schools (NOT universities) on OpenStreetMap near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby schools, if found.
+        """
+        tags = ["amenity=school"]
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        return do_osm_search(self.valves, user_valves, place, tags, limit=10)
+
+    def find_universities_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds universities and colleges on OpenStreetMap near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby schools, if found.
+        """
+        tags = ["amenity=university", "amenity=college"]
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        return do_osm_search(self.valves, user_valves, place, tags, limit=10)
+
+    def find_libraries_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds libraries on OpenStreetMap near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby libraries, if found.
+        """
+        tags = ["amenity=library"]
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_public_transport_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds public transportation stops on OpenStreetMap near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby public transportation stops, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["highway=bus_stop", "amenity=bus_station",
+                "railway=station", "railway=halt", "railway=tram_stop",
+                "station=subway", "amenity=ferry_terminal",
+                "public_transport=station"]
+        return do_osm_search(self.valves, user_valves, place, tags, limit=10)
+
+    def find_bike_rentals_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds bike rentals on OpenStreetMap near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby bike rentals, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_car_rentals_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds bike rentals on OpenStreetMap near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby bike rentals, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
+        return do_osm_search(self.valves, user_valves, place, tags, radius=6000)
