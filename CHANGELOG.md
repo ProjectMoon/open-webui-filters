@@ -1,5 +1,15 @@
 # OpenStreetMap Tool
 
+**0.6.0:**
+ - Dramatically improved single location lookup (e.g. asking "where is
+   Landmark/City?")
+ - Add a catch-all handler that the model can pick if the user wants
+   to searh for something not added to the tool. The function will
+   force the LLM to tell the user what the OSM tool can find.
+ - Added more findable POIs: Hardware stores/home improvement centers,
+   electrical and lighting stores, consumer electronics stores, and
+   healthcare (doctors' offices, hospitals, health stores).
+
 **0.5.1:**
  - Remove instruction to prioritize nodes over ways in search results.
 

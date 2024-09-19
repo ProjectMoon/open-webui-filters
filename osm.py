@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.5.1
+version: 0.6.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 """
@@ -38,6 +38,16 @@ OSM_LINK_INSTRUCTIONS = (
     "by using the latitude and longitude of the amenities: "
     f"{EXAMPLE_OSM_LINK}\n\n"
 )
+
+def specific_place_instructions() -> str:
+    return (
+        "# Result Instructions\n"
+        "These are search results ordered by relevance for the "
+        "address, place, landmark, or location the user is asking "
+        "about. **IMPORTANT!:** Tell the user all relevant information, "
+        "including address, contact information, and the OpenStreetMap link. "
+        "Make the map link nice human-readable markdown link."
+    )
 
 def detailed_instructions(tag_type_str: str) -> str:
     """
@@ -178,7 +188,51 @@ def all_are_none(*args) -> bool:
 
     return True
 
-def parse_thing_address(tags: dict) -> Optional[str]:
+def friendly_shop_name(shop_type: str) -> str:
+    """
+    Make certain shop types more friendly for LLM interpretation.
+    """
+    if shop_type == "doityourself":
+        return "home_improvement_center"
+    else:
+        return shop_type
+
+def parse_thing_address(thing: dict) -> Optional[str]:
+    """
+    Parse address from either an Overpass result or Nominatim
+    result.
+    """
+    if 'address' in thing:
+        # nominatim result
+        return parse_address_from_address_obj(thing['address'])
+    else:
+        return parse_address_from_tags(thing['tags'])
+
+def parse_address_from_address_obj(address) -> Optional[str]:
+    """Parse address from Nominatim address object."""
+    house_number = get_or_none(address, "house_number")
+    street = get_or_none(address, "road")
+    city = get_or_none(address, "city")
+    state = get_or_none(address, "state")
+    postal_code = get_or_none(address, "postcode")
+
+    # if all are none, that means we don't know the address at all.
+    if all_are_none(house_number, street, city, state, postal_code):
+        return None
+
+    # Handle missing values to create complete-ish addresses, even if
+    # we have missing data. We will get either a partly complete
+    # address, or None if all the values are missing.
+    line1 = filter(None, [street, house_number])
+    line2 = filter(None, [city, state, postal_code])
+    line1 = " ".join(line1).strip()
+    line2 = " ".join(line2).strip()
+    full_address = filter(None, [line1, line2])
+    full_address = ", ".join(full_address).strip()
+    return full_address if len(full_address) > 0 else None
+
+def parse_address_from_tags(tags: dict) -> Optional[str]:
+    """Parse address from Overpass tags object."""
     house_number = get_or_none(tags, "addr:housenumber", "addr:house_number")
     street = get_or_none(tags, "addr:street")
     city = get_or_none(tags, "addr:city")
@@ -204,6 +258,23 @@ def parse_thing_address(tags: dict) -> Optional[str]:
     full_address = ", ".join(full_address).strip()
     return full_address if len(full_address) > 0 else None
 
+def parse_thing_amenity_type(thing: dict, tags: dict) -> Optional[dict]:
+    """
+    Extract amenity type or other identifying category from
+    Nominatim or Overpass result object.
+    """
+    if 'amenity' in tags:
+        return tags['amenity']
+
+    if thing.get('class') == 'amenity':
+        return thing.get('type')
+
+    # fall back to tag categories, like shop=*
+    if 'shop' in tags:
+        return friendly_shop_name(tags['shop'])
+
+    return None
+
 def parse_and_validate_thing(thing: dict) -> Optional[dict]:
     """
     Parse an OSM result (node or post-processed way) and make it
@@ -215,19 +286,23 @@ def parse_and_validate_thing(thing: dict) -> Optional[dict]:
 
     # Currently we define "enough data" as at least having lat, lon,
     # and name.
-    if 'lat' not in thing or 'lon' not in thing or 'name' not in tags:
+    has_name = 'name' in tags or 'name' in thing
+    if 'lat' not in thing or 'lon' not in thing or not has_name:
         return None
 
     friendly_thing = {}
-    address: string = parse_thing_address(tags)
+    name: str = (tags['name'] if 'name' in tags
+                 else thing['name'] if 'name' in thing
+                 else str(thing['id']) if 'id' in thing
+                 else str(thing['osm_id']) if 'osm_id' in thing
+                 else "unknown")
+
+    address: string = parse_thing_address(thing)
     distance: Optional[float] = thing['distance'] if 'distance' in thing else None
-    name: str = tags['name'] if 'name' in tags else str(thing['id'])
+
     lat: Optional[float] = thing['lat'] if 'lat' in thing else None
     lon: Optional[float] = thing['lon'] if 'lon' in thing else None
-
-    amenity_type: Optional[str] = (
-        tags['amenity'] if 'amenity' in tags else None
-    )
+    amenity_type: Optional[str] = parse_thing_amenity_type(thing, tags)
 
     friendly_thing['name'] = name if name else "unknown"
     friendly_thing['distance'] = "{:.3f}".format(distance) if distance else "unknown"
@@ -242,13 +317,16 @@ def create_osm_link(lat, lon):
 
 def convert_and_validate_results(
     original_location: str,
-    things_nearby: List[dict]
+    things_nearby: List[dict],
+    sort_message: str="closeness",
+    use_distance: bool=True
 ) -> Optional[str]:
     """
     Converts the things_nearby JSON into Markdown-ish results to
     (hopefully) improve model understanding of the results. Intended
     to stop misinterpretation of GPS coordinates when creating map
-    links. Also drops incomplete results.
+    links. Also drops incomplete results. Supports Overpass and
+    Nominatim results.
     """
     entries = []
     for thing in things_nearby:
@@ -259,13 +337,15 @@ def convert_and_validate_results(
         if not friendly_thing:
             continue
 
+        distance = (f" - Distance from Origin: {friendly_thing['distance']} km\n"
+                    if use_distance else "")
         map_link = create_osm_link(friendly_thing['lat'], friendly_thing['lon'])
         entry = (f"## {friendly_thing['name']}\n"
                  f" - Latitude: {friendly_thing['lat']}\n"
                  f" - Longitude: {friendly_thing['lon']}\n"
                  f" - Address: {friendly_thing['address']}\n"
                  f" - Amenity Type: {friendly_thing['amenity_type']}\n"
-                 f" - Distance from Origin: {friendly_thing['distance']} km\n"
+                 f"{distance}"
                  f" - OpenStreetMap link: {map_link}\n\n"
                  f"Raw JSON data:\n"
                  "```json\n"
@@ -279,7 +359,7 @@ def convert_and_validate_results(
 
     result_text = "\n\n".join(entries)
     header = ("# Search Results\n"
-              f"Ordered by closeness to {original_location}.")
+              f"Ordered by {sort_message} to {original_location}.")
 
     return f"{header}\n\n{result_text}"
 
@@ -531,17 +611,27 @@ class Tools:
         self.valves = self.Valves()
         self.user_valves = None
 
-    def lookup_location(self, address_or_place: str) -> str:
+    def find_specific_place(self, address_or_place: str) -> str:
         """
-        Looks up GPS and address details on OpenStreetMap of a given address or place.
+        Looks up details on OpenStreetMap of a specific address, landmark,
+        place, named building, or location. Used for when the user asks where
+        a specific unique entity (like a specific museum, or church, or shopping
+        center) is.
         :param address_or_place: The address or place to look up.
-        :return: Address details, if found. None if there's an error.
+        :return: Information about the place, if found.
         """
         searcher = OsmSearcher(self.valves, self.user_valves)
         try:
             result = searcher.nominatim_search(address_or_place, limit=5)
             if result:
-                return str(result)
+                results_in_md = convert_and_validate_results(
+                    address_or_place, result,
+                    sort_message="importance", use_distance=False
+                )
+
+                resp = f"{specific_place_instructions()}\n\n{results_in_md}"
+                print(resp)
+                return resp
             else:
                 return NO_RESULTS
         except Exception as e:
@@ -750,3 +840,118 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
         return do_osm_search(self.valves, user_valves, place, tags, radius=6000)
+
+    def find_hardware_store_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds hardware stores, home improvement stores, and DIY stores
+        near given a place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby hardware/DIY stores, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["shop=doityourself", "shop=hardware", "shop=power_tools",
+                "shop=groundskeeping", "shop=trade"]
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_electrical_store_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds electrical stores and lighting stores near a given place
+        or address. These are stores that sell lighting and electrical
+        equipment like wires, sockets, and so forth.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby electrical/lighting stores, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["shop=lighting", "shop=electrical"]
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_electronics_store_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds consumer electronics stores near a given place or address.
+        These stores sell computers, cell phones, video games, and so on.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby electronics stores, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["shop=electronics"]
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_doctor_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds doctors near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby electronics stores, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["amenity=clinic", "amenity=doctors", "healthcare=doctor"]
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_hospital_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds doctors near a given place or address.
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby electronics stores, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["healthcare=hospital", "amenity=hospital"]
+        return do_osm_search(self.valves, user_valves, place, tags)
+
+    def find_pharmacy_near_place(self, __user__: dict, place: str) -> str:
+        """
+        Finds pharmacies and health shops near a given place or address
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :return: A list of nearby electronics stores, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["amenity=pharmacy", "shop=chemist", "shop=supplements",
+                "shop=health_food"]
+        return do_osm_search(self.valves, user_valves, place, tags, radius=6000)
+
+    # This function exists to help catch situations where the user is
+    # too generic in their query, or is looking for something the tool
+    # does not yet support. By having the model pick this function, we
+    # can direct it to report its capabilities and tell the user how
+    # to use it. It's not perfect, but it works sometimes.
+    def find_other_things_near_place(
+        self,
+        __user__: dict,
+        place: str,
+        category: str
+    ) -> str:
+        """
+        Find shops and other places not covered by a specific
+        category available in the other functions. Use this if the
+        user is asking for a type of store or place that other
+        functions do not support.
+
+        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param category: The category of place, shop, etc to look up.
+        :return: A list of nearby shops.
+
+        """
+        print(f"Generic catch handler called with {category}")
+        resp = (
+            "# No Results Found\n"
+            f"No results were found. There was an error. Finding {category} points of interest "
+            "is not yet supported. Tell the user support will come eventually! "
+            "Tell the user that you are only capable of finding specific "
+            "categories of stores, amenities, and points of interest:\n"
+            " - Car rentals and bike rentals\n"
+            " - Public transport, libraries\n"
+            " - Education institutions (schools and universities)\n"
+            " - Grocery stores, supermarkets, convenience stores\n"
+            " - Food and restaurants\n"
+            " - Accommodation\n"
+            " - Places of Worship\n"
+            " - Hardware stores and home improvement centers\n"
+            " - Electrical and lighting stores\n"
+            " - Consumer electronics stores\n"
+            " - Healthcare (doctors, hospitals, pharmacies, and health stores)\n"
+            " - Various recreational and leisure activities\n\n"
+            "Only mention things from the above list that you think the user "
+            "will be interested in, given the conversation so far. Don't mention "
+            "things not on the list. "
+            "**IMPORTANT**: Tell the user to be specific in their "
+            "query in their next message, so you can call the right function!")
+        print(resp)
+        return resp
