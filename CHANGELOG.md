@@ -1,5 +1,8 @@
 # OpenStreetMap Tool
 
+**0.6.2:*
+ - Override `doityourself` store to `hardware`.
+
 **0.6.1:**
  - Small adjustment to single location result instructions.
 

@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.6.1
+version: 0.6.2
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 """
@@ -74,7 +74,8 @@ def detailed_instructions(tag_type_str: str) -> str:
         f"\n\n{NO_CONFUSION}\n\n"
         "Remember that the CLOSEST result is first, and you should use "
         "that result first.\n\n"
-        "The results (if present) are below, in Markdown format."
+        "The results (if present) are below, in Markdown format.\n\n"
+        "**ALWAYS SAY THE CLOSEST RESULT FIRST!**"
     )
 
 def simple_instructions(tag_type_str: str) -> str:
@@ -193,7 +194,7 @@ def friendly_shop_name(shop_type: str) -> str:
     Make certain shop types more friendly for LLM interpretation.
     """
     if shop_type == "doityourself":
-        return "home_improvement_center"
+        return "hardware"
     else:
         return shop_type
 
