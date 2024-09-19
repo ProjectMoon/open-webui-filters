@@ -1,5 +1,8 @@
 # OpenStreetMap Tool
 
+**0.6.1:**
+ - Small adjustment to single location result instructions.
+
 **0.6.0:**
  - Dramatically improved single location lookup (e.g. asking "where is
    Landmark/City?")
