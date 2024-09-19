@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.6.0
+version: 0.6.1
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 """
@@ -46,7 +46,7 @@ def specific_place_instructions() -> str:
         "address, place, landmark, or location the user is asking "
         "about. **IMPORTANT!:** Tell the user all relevant information, "
         "including address, contact information, and the OpenStreetMap link. "
-        "Make the map link nice human-readable markdown link."
+        "Make the map link into a nice human-readable markdown link."
     )
 
 def detailed_instructions(tag_type_str: str) -> str:
