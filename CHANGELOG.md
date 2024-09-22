@@ -1,6 +1,11 @@
 # OpenStreetMap Tool
 
-**0.6.2:*
+**0.6.3**:
+ - Add tool function for resolving GPS coordinates to address.
+ - Improve handling of questions like "Where is X near me?"
+ - Add basic logging (will be toggleable in a future version).
+
+**0.6.2:**
  - Override `doityourself` store to `hardware`.
 
 **0.6.1:**

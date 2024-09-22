@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.6.2
+version: 0.6.3
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 """
@@ -573,6 +573,7 @@ class OsmSearcher:
 
 
 def do_osm_search(valves, user_valves, place, tags, limit=5, radius=4000):
+    print(f"[OSM] Searching for [{tags[0]}, etc] near place: {place}")
     searcher = OsmSearcher(valves, user_valves)
     return searcher.search_nearby(place, tags, limit=limit, radius=radius)
 
@@ -612,6 +613,17 @@ class Tools:
         self.valves = self.Valves()
         self.user_valves = None
 
+    def find_address_for_ccoordinates(self, latitude: float, longitude: float) -> str:
+        """
+        Resolves GPS coordinates to a specific address or place. Use this first to
+        convert GPS coordinates before calling another function to look up information.
+        :param latitude: The latitude portion of the GPS coordinate.
+        :param longitude: The longitude portion of the GPS coordinate.
+        :return: Information about the address or place at the coordinates.
+        """
+        print(f"[OSM] Resolving [{latitude}, {longitude}] to address.")
+        return self.find_specific_place(f"{latitude}, {longitude}")
+
     def find_specific_place(self, address_or_place: str) -> str:
         """
         Looks up details on OpenStreetMap of a specific address, landmark,
@@ -621,6 +633,7 @@ class Tools:
         :param address_or_place: The address or place to look up.
         :return: Information about the place, if found.
         """
+        print(f"[OSM] Searching for info on [{address_or_place}].")
         searcher = OsmSearcher(self.valves, self.user_valves)
         try:
             result = searcher.nominatim_search(address_or_place, limit=5)
@@ -649,7 +662,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby grocery stores or supermarkets, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -662,7 +675,7 @@ class Tools:
         Finds bakeries on OpenStreetMap near a given place or
         address. The location of the address or place is reverse
         geo-coded, then nearby results are fetched from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby bakeries, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -675,7 +688,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby restaurants, eateries, etc, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -698,7 +711,7 @@ class Tools:
         activities on OpenStreetMap near a given place or address. The location
         of the address or place is reverse geo-coded, then nearby results are fetched
         from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of swimming poools or places, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -713,7 +726,7 @@ class Tools:
         activities on OpenStreetMap near a given place or address. The location
         of the address or place is reverse geo-coded, then nearby results are fetched
         from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of recreational places, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -729,7 +742,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby places of worship, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -743,7 +756,7 @@ class Tools:
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby accommodation, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -759,7 +772,7 @@ class Tools:
         near a given place or address. The location of the address or place is
         reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby alcohol shops, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -772,7 +785,7 @@ class Tools:
         near a given place or address. The location of the address or place is
         reverse geo-coded, then nearby results
         are fetched from OpenStreetMap.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby cannabis and smart shops, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -782,7 +795,7 @@ class Tools:
     def find_schools_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds schools (NOT universities) on OpenStreetMap near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby schools, if found.
         """
         tags = ["amenity=school"]
@@ -792,7 +805,7 @@ class Tools:
     def find_universities_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds universities and colleges on OpenStreetMap near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby schools, if found.
         """
         tags = ["amenity=university", "amenity=college"]
@@ -802,7 +815,7 @@ class Tools:
     def find_libraries_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds libraries on OpenStreetMap near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby libraries, if found.
         """
         tags = ["amenity=library"]
@@ -812,7 +825,7 @@ class Tools:
     def find_public_transport_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds public transportation stops on OpenStreetMap near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby public transportation stops, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -825,7 +838,7 @@ class Tools:
     def find_bike_rentals_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds bike rentals on OpenStreetMap near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby bike rentals, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -835,7 +848,7 @@ class Tools:
     def find_car_rentals_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds bike rentals on OpenStreetMap near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby bike rentals, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -846,7 +859,7 @@ class Tools:
         """
         Finds hardware stores, home improvement stores, and DIY stores
         near given a place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby hardware/DIY stores, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -859,7 +872,7 @@ class Tools:
         Finds electrical stores and lighting stores near a given place
         or address. These are stores that sell lighting and electrical
         equipment like wires, sockets, and so forth.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby electrical/lighting stores, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -870,7 +883,7 @@ class Tools:
         """
         Finds consumer electronics stores near a given place or address.
         These stores sell computers, cell phones, video games, and so on.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby electronics stores, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -880,7 +893,7 @@ class Tools:
     def find_doctor_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds doctors near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby electronics stores, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -890,7 +903,7 @@ class Tools:
     def find_hospital_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds doctors near a given place or address.
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby electronics stores, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -900,7 +913,7 @@ class Tools:
     def find_pharmacy_near_place(self, __user__: dict, place: str) -> str:
         """
         Finds pharmacies and health shops near a given place or address
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :return: A list of nearby electronics stores, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -925,7 +938,7 @@ class Tools:
         user is asking for a type of store or place that other
         functions do not support.
 
-        :param place: The name of a place or an address. City and country must be specified, if known.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param category: The category of place, shop, etc to look up.
         :return: A list of nearby shops.
 
