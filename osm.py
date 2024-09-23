@@ -2,14 +2,14 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.6.3
+version: 0.7.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 """
 import json
 import math
 import requests
-from typing import List, Optional
+from typing import List, Optional, Callable, Any
 from pydantic import BaseModel, Field
 
 VALVES_NOT_SET = """
@@ -366,8 +366,9 @@ def convert_and_validate_results(
 
 
 class OsmSearcher:
-    def __init__(self, valves: dict, user_valves: Optional[dict]):
+    def __init__(self, valves, user_valves: Optional[dict], event_emitter=None):
         self.valves = valves
+        self.event_emitter = event_emitter
         self.user_valves = user_valves
 
     def create_headers(self) -> Optional[dict]:
@@ -378,6 +379,62 @@ class OsmSearcher:
             'User-Agent': self.valves.user_agent,
             'From': self.valves.from_header
         }
+
+    async def event_resolving(self, done: bool=False, message="OpenStreetMap: resolving..."):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "in_progress",
+                "description": message,
+                "done": done,
+            },
+        })
+
+    async def event_searching(
+            self, category: str, place: str,
+            status: str="in_progress", done: bool=False
+    ):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": status,
+                "description": f"OpenStreetMap: searching for {category} near {place}",
+                "done": done,
+            },
+        })
+
+    async def event_search_complete(self, category: str, place: str, num_results: int):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "complete",
+                "description": f"OpenStreetMap: found {num_results} '{category}' results near {place}",
+                "done": True,
+            },
+        })
+
+    async def event_error(self, exception: Exception):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "error",
+                "description": f"Error searching OpenStreetMap: {str(exception)}",
+                "done": True,
+            },
+        })
+
 
     def use_detailed_interpretation_mode(self) -> bool:
         """Let user valve for instruction mode override the global setting."""
@@ -417,7 +474,8 @@ class OsmSearcher:
                 else [])
 
 
-    def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
+    async def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
+        await self.event_resolving(done=False)
         url = self.valves.nominatim_url
         params = {
             'q': query,
@@ -432,13 +490,14 @@ class OsmSearcher:
 
         response = requests.get(url, params=params, headers=headers)
         if response.status_code == 200:
+            await self.event_resolving(done=True, message="OpenStreetMap: resolution complete.")
             data = response.json()
 
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
-
             return data[:limit]
         else:
+            await self.event_error(Exception(response.text))
             print(response.text)
             return None
 
@@ -511,71 +570,90 @@ class OsmSearcher:
             raise Exception(f"Error calling Overpass API: {response.text}")
 
 
-    def search_nearby(self, place: str, tags: List[str], limit: int=5, radius: int=4000) -> str:
+    async def search_nearby(
+            self, place: str, tags: List[str], limit: int=5, radius: int=4000,
+            category: str="POIs"
+    ) -> str:
         headers = self.create_headers()
         if not headers:
             return VALVES_NOT_SET
 
         try:
-            nominatim_result = self.nominatim_search(place, limit=1)
-            if nominatim_result:
-                nominatim_result = nominatim_result[0]
-                bbox = {
-                    'minlat': nominatim_result['boundingbox'][0],
-                    'maxlat': nominatim_result['boundingbox'][1],
-                    'minlon': nominatim_result['boundingbox'][2],
-                    'maxlon': nominatim_result['boundingbox'][3]
-                }
-
-                nodes, ways  = self.overpass_search(place, tags, bbox, limit, radius)
-
-                # use results from overpass, but if they do not exist,
-                # fall back to the nominatim result. this may or may
-                # not be a good idea.
-                things_nearby = (nodes + ways
-                                 if len(nodes) > 0 or len(ways) > 0
-                                 else OsmSearcher.fallback(nominatim_result))
-
-                origin = get_bounding_box_center(bbox)
-                things_nearby = sort_by_closeness(origin, things_nearby)
-                things_nearby = things_nearby[:limit] # drop down to requested limit
-                search_results = convert_and_validate_results(place, things_nearby)
-
-                if not things_nearby or len(things_nearby) == 0:
-                    return NO_RESULTS
-
-                tag_type_str = ", ".join(tags)
-
-                # Only print the full result instructions if we
-                # actually have something.
-                if search_results:
-                    result_instructions = self.get_result_instructions(tag_type_str)
-                else:
-                    result_instructions = ("No results found at all. "
-                                           "Tell the user there are no results.")
-
-                resp = (
-                    f"{result_instructions}\n\n"
-                    f"{search_results}"
-                )
-
-                print(resp)
-                return resp
-            else:
+            nominatim_result = await self.nominatim_search(place, limit=1)
+            if not nominatim_result:
+                await self.event_search_complete(category, place, 0)
                 return NO_RESULTS
+
+            nominatim_result = nominatim_result[0]
+            # display friendlier searching message if possible
+            if 'display_name' in nominatim_result:
+                place_display_name = ",".join(nominatim_result['display_name'].split(",")[:3])
+            else:
+                place_display_name = place
+
+            await self.event_searching(category, place_display_name, done=False)
+
+            bbox = {
+                'minlat': nominatim_result['boundingbox'][0],
+                'maxlat': nominatim_result['boundingbox'][1],
+                'minlon': nominatim_result['boundingbox'][2],
+                'maxlon': nominatim_result['boundingbox'][3]
+            }
+
+            nodes, ways  = self.overpass_search(place, tags, bbox, limit, radius)
+
+            # use results from overpass, but if they do not exist,
+            # fall back to the nominatim result. this may or may
+            # not be a good idea.
+            things_nearby = (nodes + ways
+                             if len(nodes) > 0 or len(ways) > 0
+                             else OsmSearcher.fallback(nominatim_result))
+
+            origin = get_bounding_box_center(bbox)
+            things_nearby = sort_by_closeness(origin, things_nearby)
+            things_nearby = things_nearby[:limit] # drop down to requested limit
+            search_results = convert_and_validate_results(place, things_nearby)
+
+            if not things_nearby or len(things_nearby) == 0:
+                await self.event_search_complete(category, place, 0)
+                return NO_RESULTS
+
+            tag_type_str = ", ".join(tags)
+
+            # Only print the full result instructions if we
+            # actually have something.
+            if search_results:
+                result_instructions = self.get_result_instructions(tag_type_str)
+            else:
+                result_instructions = ("No results found at all. "
+                                       "Tell the user there are no results.")
+
+            resp = (
+                f"{result_instructions}\n\n"
+                f"{search_results}"
+            )
+
+            print(resp)
+            await self.event_search_complete(category, place_display_name, len(things_nearby))
+            return resp
         except ValueError:
+            await self.event_search_complete(category, place_display_name, 0)
             return NO_RESULTS
         except Exception as e:
             print(e)
+            await self.event_error(e)
             return (f"No results were found, because of an error. "
                     f"Tell the user that there was an error finding results. "
                     f"The error was: {e}")
 
 
-def do_osm_search(valves, user_valves, place, tags, limit=5, radius=4000):
-    print(f"[OSM] Searching for [{tags[0]}, etc] near place: {place}")
-    searcher = OsmSearcher(valves, user_valves)
-    return searcher.search_nearby(place, tags, limit=limit, radius=radius)
+async def do_osm_search(
+        valves, user_valves, place, tags,
+        category="POIS", event_emitter=None, limit=5, radius=4000
+):
+    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
+    searcher = OsmSearcher(valves, user_valves, event_emitter)
+    return await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
 
 class Tools:
     class Valves(BaseModel):
@@ -598,6 +676,10 @@ class Tools:
             description=("Give detailed result interpretation instructions to the model. "
                          "Switch this off if results are inconsistent, wrong, or missing.")
         )
+        status_indicators: bool = Field(
+            default=True,
+            description=("Emit status update events to the web UI.")
+        )
         pass
 
     class UserValves(BaseModel):
@@ -613,7 +695,7 @@ class Tools:
         self.valves = self.Valves()
         self.user_valves = None
 
-    def find_address_for_ccoordinates(self, latitude: float, longitude: float) -> str:
+    async def find_address_for_ccoordinates(self, latitude: float, longitude: float, __event_emitter__) -> str:
         """
         Resolves GPS coordinates to a specific address or place. Use this first to
         convert GPS coordinates before calling another function to look up information.
@@ -622,9 +704,9 @@ class Tools:
         :return: Information about the address or place at the coordinates.
         """
         print(f"[OSM] Resolving [{latitude}, {longitude}] to address.")
-        return self.find_specific_place(f"{latitude}, {longitude}")
+        return await self.find_specific_place(f"{latitude}, {longitude}", __event_emitter__)
 
-    def find_specific_place(self, address_or_place: str) -> str:
+    async def find_specific_place(self, address_or_place: str, __event_emitter__) -> str:
         """
         Looks up details on OpenStreetMap of a specific address, landmark,
         place, named building, or location. Used for when the user asks where
@@ -634,9 +716,9 @@ class Tools:
         :return: Information about the place, if found.
         """
         print(f"[OSM] Searching for info on [{address_or_place}].")
-        searcher = OsmSearcher(self.valves, self.user_valves)
+        searcher = OsmSearcher(self.valves, self.user_valves, __event_emitter__)
         try:
-            result = searcher.nominatim_search(address_or_place, limit=5)
+            result = await searcher.nominatim_search(address_or_place, limit=5)
             if result:
                 results_in_md = convert_and_validate_results(
                     address_or_place, result,
@@ -656,7 +738,9 @@ class Tools:
                     f"Tell the user the error message.")
 
 
-    def find_grocery_stores_near_place(self, __user__: dict, place: str) -> str:
+    async def find_grocery_stores_near_place(
+            self, place: str, __user__: dict, __event_emitter__
+    ) -> str:
         """
         Finds supermarkets, grocery stores, and other food stores on
         OpenStreetMap near a given place or address. The location of the
@@ -667,10 +751,11 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=supermarket", "shop=grocery", "shop=convenience", "shop=greengrocer"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="groceries",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    def find_bakeries_near_place(self, __user__: dict, place: str) -> str:
+    async def find_bakeries_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds bakeries on OpenStreetMap near a given place or
         address. The location of the address or place is reverse
@@ -680,9 +765,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=bakery"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bakeries",
+                             place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_food_near_place(self, __user__: dict, place: str) -> str:
+    async def find_food_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds restaurants, fast food, bars, breweries, pubs, etc on
         OpenStreetMap near a given place or address. The location of the
@@ -702,10 +788,11 @@ class Tools:
             "amenity=biergarten",
             "amenity=canteen"
         ]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="restaurants and food",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    def find_swimming_near_place(self, __user__: dict, place: str) -> str:
+    async def find_swimming_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds swimming pools, water parks, swimming areas, and other aquatic
         activities on OpenStreetMap near a given place or address. The location
@@ -717,10 +804,11 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["leisure=swimming_pool", "leisure=swimming_area",
                 "leisure=water_park", "tourism=theme_park"]
-        return do_osm_search(self.valves, user_valves, place, tags, radius=10000)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="swimming",
+                                   radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    def find_recreation_near_place(self, __user__: dict, place: str) -> str:
+    async def find_recreation_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds playgrounds, theme parks, frisbee golf, ice skating, and other recreational
         activities on OpenStreetMap near a given place or address. The location
@@ -733,10 +821,11 @@ class Tools:
         tags = ["leisure=horse_riding", "leisure=ice_rink", "leisure=park",
                 "leisure=playground", "leisure=disc_golf_course",
                 "leisure=amusement_arcade", "tourism=theme_park"]
-        return do_osm_search(self.valves, user_valves, place, tags, limit=10, radius=10000)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="recreational activities",
+                                   limit=10, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    def find_place_of_worship_near_place(self, __user__: dict, place: str) -> str:
+    async def find_place_of_worship_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on
         OpenStreetMap near a given place or address. The location of the
@@ -747,10 +836,11 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=place_of_worship"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    def find_accommodation_near_place(self, __user__: dict, place: str) -> str:
+    async def find_accommodation_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds accommodation (hotels, guesthouses, hostels, etc) on
         OpenStreetMap near a given place or address. The location of the
@@ -764,9 +854,10 @@ class Tools:
             "tourism=hotel", "tourism=chalet", "tourism=guest_house", "tourism=guesthouse",
             "tourism=motel", "tourism=hostel"
         ]
-        return do_osm_search(self.valves, user_valves, place, tags, limit=10, radius=10000)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="accommodation",
+                                   radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_alcohol_near_place(self, __user__: dict, place: str) -> str:
+    async def find_alcohol_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds beer stores, liquor stores, and similar shops on OpenStreetMap
         near a given place or address. The location of the address or place is
@@ -777,9 +868,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=alcohol"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="alcohol stores",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_drugs_near_place(self, __user__: dict, place: str) -> str:
+    async def find_drugs_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds cannabis dispensaries, coffeeshops, smartshops, and similar stores on OpenStreetMap
         near a given place or address. The location of the address or place is
@@ -790,9 +882,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=coffeeshop", "shop=cannabis", "shop=headshop", "shop=smartshop"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="cannabis and smartshops",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_schools_near_place(self, __user__: dict, place: str) -> str:
+    async def find_schools_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds schools (NOT universities) on OpenStreetMap near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -800,9 +893,10 @@ class Tools:
         """
         tags = ["amenity=school"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        return do_osm_search(self.valves, user_valves, place, tags, limit=10)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="schools",
+                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_universities_near_place(self, __user__: dict, place: str) -> str:
+    async def find_universities_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds universities and colleges on OpenStreetMap near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -810,9 +904,10 @@ class Tools:
         """
         tags = ["amenity=university", "amenity=college"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        return do_osm_search(self.valves, user_valves, place, tags, limit=10)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="universities",
+                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_libraries_near_place(self, __user__: dict, place: str) -> str:
+    async def find_libraries_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds libraries on OpenStreetMap near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -820,9 +915,10 @@ class Tools:
         """
         tags = ["amenity=library"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="libraries",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_public_transport_near_place(self, __user__: dict, place: str) -> str:
+    async def find_public_transport_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds public transportation stops on OpenStreetMap near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -833,9 +929,10 @@ class Tools:
                 "railway=station", "railway=halt", "railway=tram_stop",
                 "station=subway", "amenity=ferry_terminal",
                 "public_transport=station"]
-        return do_osm_search(self.valves, user_valves, place, tags, limit=10)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="public transport",
+                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_bike_rentals_near_place(self, __user__: dict, place: str) -> str:
+    async def find_bike_rentals_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds bike rentals on OpenStreetMap near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -843,9 +940,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bike rental",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_car_rentals_near_place(self, __user__: dict, place: str) -> str:
+    async def find_car_rentals_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds bike rentals on OpenStreetMap near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -853,9 +951,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
-        return do_osm_search(self.valves, user_valves, place, tags, radius=6000)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="car rental",
+                                   radius=6000, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_hardware_store_near_place(self, __user__: dict, place: str) -> str:
+    async def find_hardware_store_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds hardware stores, home improvement stores, and DIY stores
         near given a place or address.
@@ -865,9 +964,10 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=doityourself", "shop=hardware", "shop=power_tools",
                 "shop=groundskeeping", "shop=trade"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="hardware stores",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_electrical_store_near_place(self, __user__: dict, place: str) -> str:
+    async def find_electrical_store_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds electrical stores and lighting stores near a given place
         or address. These are stores that sell lighting and electrical
@@ -877,9 +977,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=lighting", "shop=electrical"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="electrical stores",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_electronics_store_near_place(self, __user__: dict, place: str) -> str:
+    async def find_electronics_store_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds consumer electronics stores near a given place or address.
         These stores sell computers, cell phones, video games, and so on.
@@ -888,9 +989,11 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=electronics"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves,
+                                   category="consumer electronics store", place=place,
+                                   tags=tags, event_emitter=__event_emitter__)
 
-    def find_doctor_near_place(self, __user__: dict, place: str) -> str:
+    async def find_doctor_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds doctors near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -898,9 +1001,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=clinic", "amenity=doctors", "healthcare=doctor"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="doctor",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_hospital_near_place(self, __user__: dict, place: str) -> str:
+    async def find_hospital_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds doctors near a given place or address.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -908,9 +1012,10 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["healthcare=hospital", "amenity=hospital"]
-        return do_osm_search(self.valves, user_valves, place, tags)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="hospitals",
+                                   place=place, tags=tags, event_emitter=__event_emitter__)
 
-    def find_pharmacy_near_place(self, __user__: dict, place: str) -> str:
+    async def find_pharmacy_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
         Finds pharmacies and health shops near a given place or address
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -919,7 +1024,8 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=pharmacy", "shop=chemist", "shop=supplements",
                 "shop=health_food"]
-        return do_osm_search(self.valves, user_valves, place, tags, radius=6000)
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="pharmacies",
+                                   radius=6000, place=place, tags=tags, event_emitter=__event_emitter__)
 
     # This function exists to help catch situations where the user is
     # too generic in their query, or is looking for something the tool

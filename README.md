@@ -249,6 +249,9 @@ There are currently five settings:
    detail in the instructions for interpreting results given to the
    LLM. By default, it gives detailed instructions. Turn this setting
    off if results are inconsistent, wrong, or missing.
+ - **Status Indicators:** If enabled, emit update events to the web
+   UI, showing what the tool is doing and what search results it has
+   found, or if it has encountered an error.
 
 The tool **will not run** without the User Agent and From headers set.
 This is because the public instance of the Nominatim API will block
@@ -259,6 +262,18 @@ The default API services are suitable for applications with a low
 volume of traffic (absolute max 1 API call per second). If you are
 running a production service, you should set up your own Nominatim and
 Overpass services with caching.
+
+## How to enable 'Where is the closest X to my location?'
+
+In order to have the OSM tool be able to answer questions like "where
+is the nearest grocery store to me?", it needs access to your realtime
+location. This can be accomplished with the following steps:
+ - Enable user location in your user settings.
+ - Create a model with a _system prompt_ that references the variable
+   `{{USER_LOCATION}}`.
+ - OpenWebUI will automatically substitute the GPS coordinates
+   reported by the browser into the model's system prompt on every
+   message.
 
 # License
 

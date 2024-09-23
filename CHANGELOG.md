@@ -1,6 +1,10 @@
 # OpenStreetMap Tool
 
-**0.6.3**:
+**0.7.0:**
+ - Emit event to web UI, showing what the tool is doing.
+ - This can be toggled, as a valve setting (not a user valve).
+
+**0.6.3:**
  - Add tool function for resolving GPS coordinates to address.
  - Improve handling of questions like "Where is X near me?"
  - Add basic logging (will be toggleable in a future version).
