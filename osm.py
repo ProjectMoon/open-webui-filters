@@ -649,7 +649,7 @@ class OsmSearcher:
 
 async def do_osm_search(
         valves, user_valves, place, tags,
-        category="POIS", event_emitter=None, limit=5, radius=4000
+        category="POIs", event_emitter=None, limit=5, radius=4000
 ):
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
     searcher = OsmSearcher(valves, user_valves, event_emitter)
