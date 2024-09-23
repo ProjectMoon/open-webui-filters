@@ -234,7 +234,7 @@ _Recommended models: Llama 3.1, Mistral Nemo Instruct._
 A tool that can find certain points of interest (POIs) nearby a
 requested address or place.
 
-There are currently five settings:
+There are currently six settings:
  - **User Agent:** The custom user agent to set for OSM and Overpass
    Turbo API requests.
  - **From Header:** The email address for the From header for OSM and
