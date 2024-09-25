@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.7.0
+version: 0.8.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 """
@@ -267,7 +267,7 @@ def parse_thing_amenity_type(thing: dict, tags: dict) -> Optional[dict]:
     if 'amenity' in tags:
         return tags['amenity']
 
-    if thing.get('class') == 'amenity':
+    if thing.get('class') == 'amenity' or thing.get('class') == 'shop':
         return thing.get('type')
 
     # fall back to tag categories, like shop=*
@@ -495,6 +495,8 @@ class OsmSearcher:
 
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
+
+            print(data)
             return data[:limit]
         else:
             await self.event_error(Exception(response.text))
@@ -705,6 +707,25 @@ class Tools:
         """
         print(f"[OSM] Resolving [{latitude}, {longitude}] to address.")
         return await self.find_specific_place(f"{latitude}, {longitude}", __event_emitter__)
+
+    async def find_specific_store_near_coordinates(
+            self, store_or_business_name: str, latitude: float, longitude: float, __event_emitter__
+    ) -> str:
+        """
+        Finds specifically named stores or businesses near the given
+        GPS coordinates. This can be used for general or specific things,
+        like 'gas station' or 'grocery store', or the name of a specific
+        chain (like 'Wal-Mart' or 'Albert Heijn'). This function is intended
+        for finding specific chains or businesses near the given coordinates.
+        Use this if the user asks about businesses nearby.
+        :param store_or_business_name: Name of store or business to look for.
+        :param latitude: The latitude portion of the GPS coordinate.
+        :param longitude: The longitude portion of the GPS coordinate.
+        :return: Information about the address or places near the coordinates.
+        """
+        print(f"Searching for '{store_or_business_name}' near {latitude},{longitude}")
+        query = f"{store_or_business_name} {latitude},{longitude}"
+        return await self.find_specific_place(query, __event_emitter__)
 
     async def find_specific_place(self, address_or_place: str, __event_emitter__) -> str:
         """
@@ -1047,7 +1068,6 @@ class Tools:
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param category: The category of place, shop, etc to look up.
         :return: A list of nearby shops.
-
         """
         print(f"Generic catch handler called with {category}")
         resp = (

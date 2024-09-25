@@ -1,5 +1,13 @@
 # OpenStreetMap Tool
 
+**0.8.0:**
+ - Added ability to find specific stores and businesses near
+   coordinates. Helps LLM answer questions about arbitrary businesses
+   that it might not find with the pre-defined search functions.
+ - Pull shop type from Nominatim results when class=shop. Improves
+   accuracy of searching for specific places by telling LLM the type
+   of shop.
+
 **0.7.0:**
  - Emit event to web UI, showing what the tool is doing.
  - This can be toggled, as a valve setting (not a user valve).
