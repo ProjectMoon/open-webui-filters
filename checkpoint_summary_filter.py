@@ -2,7 +2,7 @@
 title: Checkpoint Summary Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.0
+version: 0.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.3.29
 """
@@ -438,7 +438,8 @@ async def calculate_num_ctx(chat_id: str, user_id, model: dict) -> int:
         # useful info.
         chat = json.loads(chat.chat)
         if "params" in chat and "num_ctx" in chat["params"]:
-            return chat["params"]["num_ctx"]
+            if chat["params"]["num_ctx"] is not None:
+                return chat["params"]["num_ctx"]
 
     # then check open web ui model def
     num_ctx = extract_owu_model_param(model, "num_ctx")
@@ -621,7 +622,7 @@ class Filter:
         if system_prompt:
             system_prompt["content"] += f"\n\n{summary_message}"
         else:
-            system_prompt = { "role": "system", "content": summary_message }
+             system_prompt = { "role": "system", "content": summary_message }
 
 
         # drop old messages, reapply system prompt.

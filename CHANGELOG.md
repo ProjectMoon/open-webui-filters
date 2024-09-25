@@ -82,6 +82,13 @@
 
 # Checkpoint Summarization Filter
 
+**0.2.1:**
+ - Fix `None - int` error when setting num_ctx in a chat, and then
+   unsetting it.
+
+**0.2.0:**
+ - Update for newer versions of OpenWebUI (0.3.29+).
+
 **0.1.0:**
  - Initial release.
 
