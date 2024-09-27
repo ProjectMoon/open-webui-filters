@@ -24,7 +24,7 @@ So far:
  - **OpenStreetMap Tool:** Tool for querying OpenStreetMap to look up
    address details and nearby points of interest.
 
-## Checkpoint Sumarization Filter
+## Checkpoint Summarization Filter
 
 A new filter for managing context use by summarizing previous parts of
 the chat as the conversation continues. Designed for both general
