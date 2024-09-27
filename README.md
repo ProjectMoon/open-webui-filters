@@ -229,12 +229,12 @@ the LLM's reply.
 
 ## OpenStreetMap Tool
 
-_Recommended models: Llama 3.1, Mistral Nemo Instruct._
+_Recommended models: Llama 3.1+, Mistral Nemo, Mistral Small, Qwen 2.5._
 
 A tool that can find certain points of interest (POIs) nearby a
 requested address or place.
 
-There are currently six settings:
+These are the current settings:
  - **User Agent:** The custom user agent to set for OSM and Overpass
    Turbo API requests.
  - **From Header:** The email address for the From header for OSM and
@@ -252,6 +252,11 @@ There are currently six settings:
  - **Status Indicators:** If enabled, emit update events to the web
    UI, showing what the tool is doing and what search results it has
    found, or if it has encountered an error.
+ - **ORS API Key:** Provide an API key for Open Route Service to
+   calculate navigational routes to nearby places, to provide more
+   accurate search results.
+ - **ORS Instance:** By default, use the public Open Route Service
+   instance. Can be changed to point to another ORS instance.
 
 The tool **will not run** without the User Agent and From headers set.
 This is because the public instance of the Nominatim API will block

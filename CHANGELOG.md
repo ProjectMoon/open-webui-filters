@@ -1,5 +1,15 @@
 # OpenStreetMap Tool
 
+**0.9.0:**
+ - Integrate OpenRouteService to allow calculation of more accurate
+   distances based on the distance of travel rather than "as the crow
+   flies" distance.
+ - If OpenRouteService is not enabled, the original method will be
+   used for calculating distance.
+ - ORS is not enabled by default.
+ - Properly extract amenity type of leisure locations (playgrounds,
+   parks, etc) in search results.
+
 **0.8.0:**
  - Added ability to find specific stores and businesses near
    coordinates. Helps LLM answer questions about arbitrary businesses
