@@ -241,7 +241,8 @@ These are the current settings:
    Overpass API requests.
  - **Nominatim API URL:** URL of the API endpoint for Nominatim, the
    reverse geocoding (address lookup) service. Defaults to the public
-   instance.
+   instance. This must be the root URL, for example:
+   `https://nominatim.openstreetmap.org/`.
  - **Overpass Turbo API URL:** URL of the API endpoint for Overpass
    Turbo, for searching OpenStreetMap. Defaults to the public
    endpoint.

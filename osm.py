@@ -1,12 +1,13 @@
 """
 title: OpenStreetMap Tool
 author: projectmoon
-author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.9.0
+nauthor_url: https://git.agnos.is/projectmoon/open-webui-filters
+version: 1.0.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 requirements: openrouteservice
 """
+import itertools
 import json
 import math
 import requests
@@ -14,9 +15,30 @@ import requests
 import openrouteservice
 from openrouteservice.directions import directions as ors_directions
 
+from urllib.parse import urljoin, urlencode
 from operator import itemgetter
 from typing import List, Optional, Callable, Any
 from pydantic import BaseModel, Field
+
+NOMINATIM_LOOKUP_TYPES = {
+    "node": "N",
+    "route": "R",
+    "way": "W"
+}
+
+OLD_VALVE_SETTING = """ Tell the user that you cannot search
+OpenStreetMap until the configuration is fixed. The Nominatim URL
+valve setting needs to be updated. There has been a breaking change in
+1.0 of the OpenStreetMap tool. The valve setting is currently set to:
+`{OLD}`.
+
+It shoule be set to the root URL of the Nominatim endpoint, for
+example:
+
+`https://nominatim.openstreetmap.org/`
+
+Inform the user they need to fix this configuration setting.
+""".replace("\n", " ").strip()
 
 VALVES_NOT_SET = """
 Tell the user that the User-Agent and From headers
@@ -44,6 +66,17 @@ OSM_LINK_INSTRUCTIONS = (
     "by using the latitude and longitude of the amenities: "
     f"{EXAMPLE_OSM_LINK}\n\n"
 )
+
+def chunk_list(input_list, chunk_size):
+    it = iter(input_list)
+    return list(
+        itertools.zip_longest(*[iter(it)] * chunk_size, fillvalue=None)
+    )
+
+def to_lookup(thing) -> Optional[str]:
+    lookup_type = NOMINATIM_LOOKUP_TYPES.get(thing['type'])
+    if lookup_type is not None:
+        return f"{lookup_type}{thing['id']}"
 
 def specific_place_instructions() -> str:
     return (
@@ -111,13 +144,65 @@ def simple_instructions(tag_type_str: str) -> str:
         "The search results are below."
     )
 
-def way_has_info(way):
+def merge_from_nominatim(thing, nominatim_result) -> Optional[dict]:
+    """Merge information into object missing all or some of it."""
+    if thing is None:
+        return None
+
+    if 'address' not in nominatim_result:
+        return None
+
+    nominatim_address = nominatim_result['address']
+
+    # prioritize actual name, road name, then display name. display
+    # name is often the full address, which is a bit much.
+    nominatim_name = nominatim_result.get('name')
+    nominatim_road = nominatim_address.get('road')
+    nominatim_display_name = nominatim_result.get('display_name')
+    thing_name = thing.get('name')
+
+    if nominatim_name and not thing_name:
+        thing['name'] = nominatim_name.strip()
+    elif nominatim_road and not thing_name:
+        thing['name'] = nominatim_road.strip()
+    elif nominati_display_name and not thing_name:
+        thing['name'] = nominatim_display_name.strip()
+
+    tags = thing.get('tags', {})
+
+    for key in nominatim_address:
+        obj_key = f"addr:{key}"
+        if obj_key not in tags:
+            tags[obj_key] = nominatim_address[key]
+
+    thing['tags'] = tags
+    return thing
+
+def thing_is_useful(thing):
     """
     Determine if an OSM way entry is useful to us. This means it
     has something more than just its main classification tag, and
-    has at least a name.
+    (usually) has at least a name. Some exceptions are made for ways
+    that do not have names.
     """
-    return len(way['tags']) > 1 and any('name' in tag for tag in way['tags'])
+    tags = thing.get('tags', {})
+    has_tags = len(tags) > 1
+    has_useful_tags = (
+        'leisure' in tags or
+        'shop' in tags or
+        'amenity' in tags or
+        'car:rental' in tags or
+        'rental' in tags or
+        'car_rental' in tags or
+        'service:bicycle:rental' in tags
+    )
+    return has_tags and has_useful_tags
+
+def thing_has_info(thing):
+    has_name = any('name' in tag for tag in thing['tags'])
+    return thing_is_useful(thing) and has_name
+    # is_exception = way['tags'].get('leisure', None) is not None
+    # return has_tags and (has_name or is_exception)
 
 def process_way_result(way) -> Optional[dict]:
     """
@@ -293,9 +378,14 @@ def parse_and_validate_thing(thing: dict) -> Optional[dict]:
     tags: dict = thing['tags'] if 'tags' in thing else {}
 
     # Currently we define "enough data" as at least having lat, lon,
-    # and name.
+    # and a name. nameless things are allowed if they are in a certain
+    # class of POIs (leisure).
     has_name = 'name' in tags or 'name' in thing
-    if 'lat' not in thing or 'lon' not in thing or not has_name:
+    is_leisure = 'leisure' in tags or 'leisure' in thing
+    if 'lat' not in thing or 'lon' not in thing:
+        return None
+
+    if not has_name and not is_leisure:
         return None
 
     friendly_thing = {}
@@ -383,6 +473,51 @@ def convert_and_validate_results(
 
     return f"{header}\n\n{result_text}"
 
+class OsmCache:
+    def __init__(self, filename="/tmp/osm.json"):
+        self.filename = filename
+        self.data = {}
+
+        # Load existing cache if it exists
+        try:
+            with open(self.filename, 'r') as f:
+                self.data = json.load(f)
+        except FileNotFoundError:
+            pass
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def set(self, key, value):
+        self.data[key] = value
+        with open(self.filename, 'w') as f:
+            json.dump(self.data, f)
+
+    def get_or_set(self, key, func_to_call):
+        """
+        Retrieve the value from the cache for a given key. If the key is not found,
+        call `func_to_call` to generate the value and store it in the cache.
+
+        :param key: The key to look up or set in the cache
+        :param func_to_call: A callable function that returns the value if key is missing
+        :return: The cached or generated value
+        """
+        if key not in self.data:
+            value = func_to_call()
+            self.set(key, value)
+        return self.data[key]
+
+    def clear_cache(self):
+        """
+        Clear all entries from the cache.
+        """
+        self.data.clear()
+        try:
+            # Erase contents of the cache file.
+            with open(self.filename, 'w'):
+                pass
+        except FileNotFoundError:
+            pass
 
 class OrsRouter:
     def __init__(
@@ -465,6 +600,19 @@ class OsmSearcher:
             },
         })
 
+    async def event_fetching(self, done: bool=False, message="OpenStreetMap: fetching additional info"):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "in_progress",
+                "description": message,
+                "done": done,
+            },
+        })
+
     async def event_searching(
             self, category: str, place: str,
             status: str="in_progress", done: bool=False
@@ -489,7 +637,7 @@ class OsmSearcher:
             "type": "status",
             "data": {
                 "status": "complete",
-                "description": f"OpenStreetMap: found {num_results} '{category}' results near {place}",
+                "description": f"OpenStreetMap: found {num_results} '{category}' results",
                 "done": True,
             },
         })
@@ -514,12 +662,20 @@ class OsmSearcher:
     def attempt_ors(self, origin, things_nearby) -> bool:
         """Update distances to use ORS navigable distances, if ORS enabled."""
         used_ors = False
+        cache = OsmCache()
         for thing in things_nearby:
-            print(f"Checking ORS for {thing}")
+            cache_key = f"ors_{origin}_{thing['id']}"
+            nav_distance = cache.get(cache_key)
 
-            nav_distance = self.calculate_navigation_distance(origin, thing)
+            if nav_distance:
+                print(f"Got nav distance for {thing['id']} from cache!")
+            else:
+                print(f"Checking ORS for {thing['id']}")
+                nav_distance = self.calculate_navigation_distance(origin, thing)
+
             if nav_distance:
                 used_ors = True
+                cache.set(cache_key, nav_distance)
                 thing['nav_distance'] = nav_distance
 
         return used_ors
@@ -568,9 +724,93 @@ class OsmSearcher:
                 else [])
 
 
+    async def nominatim_lookup_by_id(self, things, format="json"):
+        await self.event_fetching(done=False)
+        updated_things = [] # the things with merged info.
+
+        # handle last chunk, which can have nones in order due to the
+        # way chunking is done.
+        things = [thing for thing in things if thing is not None]
+        lookups = []
+
+        for thing in things:
+            if thing is None:
+                continue
+            lookup = to_lookup(thing)
+            if lookup is not None:
+                lookups.append(lookup)
+
+        # Nominatim likes it if we cache our data.
+        cache = OsmCache()
+        lookups_to_remove = []
+        for lookup_id in lookups:
+            from_cache = cache.get(lookup_id)
+            if from_cache is not None:
+                updated_things.append(from_cache)
+                lookups_to_remove.append(lookup_id)
+
+        # only need to look up things we do not have cached.
+        lookups = [id for id in lookups if id not in lookups_to_remove]
+
+        if len(lookups) == 0:
+            print("Got all Nominatim info from cache!")
+            await self.event_fetching(done=True)
+            return updated_things
+        else:
+            print(f"Looking up {len(lookups)} things from Nominatim")
+
+
+        url = urljoin(self.valves.nominatim_url, "lookup")
+        params = {
+            'osm_ids': ",".join(lookups),
+            'format': format
+        }
+
+        headers = self.create_headers()
+        if not headers:
+            raise ValueError("Headers not set")
+
+        response = requests.get(url, params=params, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+
+            if not data:
+                print("No results found for lookup")
+                await self.event_fetching(done=True)
+                return []
+
+            addresses_by_id = {item['osm_id']: item for item in data}
+
+            for thing in things:
+                nominatim_result = addresses_by_id.get(thing['id'], {})
+                if nominatim_result != {}:
+                    updated = merge_from_nominatim(thing, nominatim_result)
+                    if updated is not None:
+                        lookup = to_lookup(thing)
+                        cache.set(lookup, updated)
+                        updated_things.append(updated)
+
+            await self.event_fetching(done=True)
+            return updated_things
+        else:
+            await self.event_error(Exception(response.text))
+            print(response.text)
+            return []
+
+
     async def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
         await self.event_resolving(done=False)
-        url = self.valves.nominatim_url
+        cache_key = f"nominatim_search_{query}"
+        cache = OsmCache()
+        data = cache.get(cache_key)
+
+        if data:
+            print(f"Got nominatim search data for {query} from cache!")
+            return data[:limit]
+
+        print(f"Searching Nominatim for: {query}")
+
+        url = urljoin(self.valves.nominatim_url, "search")
         params = {
             'q': query,
             'format': format,
@@ -590,7 +830,8 @@ class OsmSearcher:
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
 
-            print(data)
+            print(f"Got result from Nominatim for: {query}")
+            cache.set(cache_key, data)
             return data[:limit]
         else:
             await self.event_error(Exception(response.text))
@@ -598,7 +839,7 @@ class OsmSearcher:
             return None
 
 
-    def overpass_search(
+    async def overpass_search(
             self, place, tags, bbox, limit=5, radius=4000
     ) -> (List[dict], List[dict]):
         """
@@ -606,6 +847,7 @@ class OsmSearcher:
         post-processing is done on ways in order to add coordinates to
         them.
         """
+        print(f"Searching Overpass Turbo around origin {place}")
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
@@ -651,14 +893,30 @@ class OsmSearcher:
             results = results['elements'] if 'elements' in results else []
             nodes = []
             ways = []
+            things_missing_names = []
 
             for res in results:
-                if 'type' not in res:
+                if 'type' not in res or not thing_is_useful(res):
                     continue
                 if res['type'] == 'node':
-                    nodes.append(res)
-                elif res['type'] == 'way' and way_has_info(res):
-                    ways.append(process_way_result(res))
+                    if thing_has_info(res):
+                        nodes.append(res)
+                    else:
+                        things_missing_names.append(res)
+                elif res['type'] == 'way':
+                    processed = process_way_result(res)
+                    if processed is not None and thing_has_info(res):
+                        ways.append(processed)
+                    else:
+                        if processed is not None:
+                            things_missing_names.append(processed)
+
+            # attempt to update ways that have no names/addresses.
+            if len(things_missing_names) > 0:
+                print(f"Updating {len(things_missing_names)} things with info")
+                for way_chunk in chunk_list(things_missing_names, 20):
+                    updated = await self.nominatim_lookup_by_id(way_chunk)
+                    ways = ways + updated
 
             return nodes, ways
         else:
@@ -666,7 +924,7 @@ class OsmSearcher:
             raise Exception(f"Error calling Overpass API: {response.text}")
 
     async def get_things_nearby(self, nominatim_result, place, tags, bbox, limit, radius):
-        nodes, ways = self.overpass_search(place, tags, bbox, limit, radius)
+        nodes, ways = await self.overpass_search(place, tags, bbox, limit, radius)
 
         # use results from overpass, but if they do not exist,
         # fall back to the nominatim result. this may or may
@@ -758,9 +1016,38 @@ async def do_osm_search(
         valves, user_valves, place, tags,
         category="POIs", event_emitter=None, limit=5, radius=4000
 ):
+    # handle breaking 1.0 change, in case of old Nominatim valve settings.
+    if valves.nominatim_url.endswith("/search"):
+        message = "Old Nominatim URL setting still in use!"
+        print(f"[OSM] ERROR: {message}")
+        if valves.status_indicators and event_emitter is not None:
+            await event_emitter({
+                "type": "status",
+                "data": {
+                    "status": "error",
+                    "description": f"Error searching OpenStreetMap: {message}",
+                    "done": True,
+                },
+            })
+        return OLD_VALVE_SETTING.replace("{OLD}", valves.nominatim_url)
+
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
     searcher = OsmSearcher(valves, user_valves, event_emitter)
-    return await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
+    results = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
+
+    if valves.status_indicators and event_emitter is not None:
+        # we generally assume that category is plural.
+        await event_emitter({
+            "type": "citation",
+            "data": {
+                "document": [results],
+                "metadata": [{"source": "OpenStreetMap"}],
+                "source": {"name": f"{category.title()} near {place}"},
+            }
+        })
+
+    return results
+
 
 class Tools:
     class Valves(BaseModel):
@@ -771,7 +1058,7 @@ class Tools:
             default="", description="Email address to identify your OSM requests."
         )
         nominatim_url: str = Field(
-            default="https://nominatim.openstreetmap.org/search",
+            default="https://nominatim.openstreetmap.org/",
             description="URL of OSM Nominatim API for reverse geocoding (address lookup)."
         )
         overpass_turbo_url: str = Field(
@@ -942,9 +1229,9 @@ class Tools:
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="swimming",
                                    radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_playground_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_playgrounds_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
-        Finds playgrounds on OpenStreetMap near a given place, address, or coordinates.
+        Finds playgrounds and parks on OpenStreetMap near a given place, address, or coordinates.
         The location of the address or place is reverse geo-coded, then nearby results are fetched
         from OpenStreetMap.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -953,11 +1240,11 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["leisure=playground"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="playgrounds",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_recreation_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
-        Finds playgrounds, theme parks, frisbee golf, ice skating, and other recreational
+        Finds playgrounds, theme parks, parks, frisbee golf, ice skating, and other recreational
         activities on OpenStreetMap near a given place or address. The location
         of the address or place is reverse geo-coded, then nearby results are fetched
         from OpenStreetMap.
@@ -965,9 +1252,8 @@ class Tools:
         :return: A list of recreational places, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["leisure=horse_riding", "leisure=ice_rink", "leisure=park",
-                "leisure=playground", "leisure=disc_golf_course",
-                "leisure=amusement_arcade", "tourism=theme_park"]
+        tags = ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course",
+                "leisure=park", "leisure=amusement_arcade", "tourism=theme_park"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="recreational activities",
                                    limit=10, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
 
@@ -1087,7 +1373,7 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bike rental",
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bike rentals",
                                    place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_car_rentals_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
@@ -1098,7 +1384,7 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="car rental",
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="car rentals",
                                    radius=6000, place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_hardware_store_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
@@ -1137,7 +1423,7 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=electronics"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves,
-                                   category="consumer electronics store", place=place,
+                                   category="consumer electronics stores", place=place,
                                    tags=tags, event_emitter=__event_emitter__)
 
     async def find_doctor_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
@@ -1148,7 +1434,7 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=clinic", "amenity=doctors", "healthcare=doctor"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="doctor",
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="doctors",
                                    place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_hospital_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
@@ -1158,7 +1444,7 @@ class Tools:
         :return: A list of nearby electronics stores, if found.
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["healthcare=hospital", "amenity=hospital"]
+        tags = ["healthcare=hospital", "amenity=hospitals"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="hospitals",
                                    place=place, tags=tags, event_emitter=__event_emitter__)
 

@@ -1,5 +1,21 @@
 # OpenStreetMap Tool
 
+**1.0.0:**
+ - Breaking change: Nominatim URL must now be set to the root domain.
+   The model will warn you about this.
+ - Caching: Almost all data that the tool fetches is now cached in a
+   JSON file (`/tmp/osm.json`). This reduces load on public OSM
+   services.
+   - Future updates will allow more control over cache behavior.
+   - The only thing that is not cached at all is the Overpass Turbo
+     search, that actually finds POIs.
+ - Handling of unnamed points of interest: many smaller POIs like
+   neighborhood playgrounds do not have names. The tool will now look
+   up addresses for theses POIs using Nominatim.
+ - Citations: The tool will now send citations when the indicators
+   setting is turned on. The citation contains the results of the
+   search given to the LLM.
+
 **0.9.0:**
  - Integrate OpenRouteService to allow calculation of more accurate
    distances based on the distance of travel rather than "as the crow
