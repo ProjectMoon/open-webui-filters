@@ -2,7 +2,7 @@
 title: GPU Scaling Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.0
+version: 0.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.3.9
 """
@@ -18,10 +18,14 @@ from typing import Callable, Awaitable, Any, Optional, Literal
 import json
 
 # OpenWebUI imports
-from config import CHROMA_CLIENT
+from open_webui.apps.rag.vector.connector import VECTOR_DB_CLIENT
 from utils.misc import get_last_user_message, get_last_assistant_message
 from apps.ollama.main import generate_chat_completion, GenerateChatCompletionForm
 from apps.webui.models.users import UserModel
+
+# Why refactor when you can janky monkey patch? This will NOT be fixed at
+# some point, as this filter is deprecated.
+CHROMA_CLIENT = VECTOR_DB_CLIENT.client
 
 class GpuChatState:
     """

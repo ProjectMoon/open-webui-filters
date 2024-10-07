@@ -129,6 +129,9 @@
 
 # GPU Scaling Filter
 
+**0.2.1:**
+ - Fixes for internal OpenWebUI refactoring.
+
 **0.2.0:**
  - Fix filter not working when using base models directly.
  - Do not fire the filter if model is not owned by ollama.
@@ -144,3 +147,8 @@
 
 **0.1.0:**
  - Initial Release
+
+# Collapsible Thought Filter
+
+**0.1.0:**
+ - Initial release.

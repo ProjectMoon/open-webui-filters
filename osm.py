@@ -1,7 +1,7 @@
 """
 title: OpenStreetMap Tool
 author: projectmoon
-nauthor_url: https://git.agnos.is/projectmoon/open-webui-filters
+author_url: https://git.agnos.is/projectmoon/open-webui-filters
 version: 1.0.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
