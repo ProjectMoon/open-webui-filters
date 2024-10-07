@@ -14,15 +14,14 @@ So far:
 
  - **Checkpoint Summarization Filter:** A work-in-progress replacement
    for the narrative memory filter for more generalized use cases.
- - **Memory Filter:** A basic narrative memory filter intended for
-   long-form storytelling/roleplaying scenarios. Intended as a proof
-   of concept/springboard for more advanced narrative memory.
  - **GPU Scaling Filter:** Reduce number of GPU layers in use if Ollama
-   crashes due to running out of VRAM.
+   crashes due to running out of VRAM. Deprecated.
  - **Output Sanitization Filter:** Remove words, phrases, or
    characters from the start of model replies.
  - **OpenStreetMap Tool:** Tool for querying OpenStreetMap to look up
    address details and nearby points of interest.
+ - **Collapsible Thought Filter:** Hide LLM reasoning/thinking in a
+   collapisble block.
 
 ## Checkpoint Summarization Filter
 
@@ -97,95 +96,9 @@ There are some limitations to be aware of:
  - The filter only loads the most recent summary, and thus the AI
    might "forget" much older information.
 
-## Memory Filter
-
-__Superseded By: [Checkpoint Summarization Filter][checkpoint-filter]__
-
-Super hacky, very basic automatic narrative memory filter for
-OpenWebUI, that may or may not actually enhance narrative generation!
-
-This is intended to be a springboard for a better, more comprehensive
-filter that can coherently keep track(ish?) of plot and character
-developments in long form story writing/roleplaying scenarios, where
-context window length is limited (or ollama crashes on long context
-length models despite having 40 GB of unused memory!).
-
-### Configuration
-
-The filter exposes two settings:
-
- - **Summarization model:** This is the model used for extracting and
-   creating all of the narrative memory, and searching info. It must
-   be good at following instructions. I use Gemma 2.
-     - **It must be a base model.** If it's not, things will not work.
-     - If you don't set this, the filter will attempt to use the model
-       in the conversation. It must still be a base model.
- - **Number of messages to retain:** Number of messages to retain for the
-   context. All messages before that are dropped in order to manage
-   context length.
-
-Ideally, the summarization model is the same model you are using for
-the storytelling. Otherwise you may have lots of model swap-outs.
-
-The filter hooks in to OpenWebUI's RAG settings to generate embeddings
-and query the vector database. The filter will use the same embedding
-model and ChromaDB instance that's configured in the admin settings.
-
-### Usage
-
-Enable the filter on a model that you want to use to generate stories.
-It is recommended, although not required, that this be the same model
-as the summarizer model (above). If you have lots of VRAM or are very
-patient, you can use different models.
-
-User input is pre-processed to 'enrich' the narrative. Replies from
-the language model are analyzed post-delivery to update the story's
-knowlege repository.
-
-You will see status indicators on LLM messages indicating what the
-filter is doing.
-
-Do not reply while the model is updating its knowledge base or funny
-things might happen.
-
-### Function
-
-What does it do?
- - When receiving user input, generate search queries for vector DB
-   based on user input + last model response.
- - Search vector DB for theoretically relevant character and plot
-   information.
- - Ask model to summarize results into coherent and more relevant
-   stuff.
- - Inject results as <context>contextual info</context> for the model.
- - After receiving model narrative reply, generate character and plot
-   info and stick them into the vector DB.
-
-### Limitations and Known Issues
-
-What does it not do?
- - Handle conversational branching/regeneration. In fact, this will
-   pollute the knowledgebase with extra information!
-   - Bouncing around some ideas to fix this. Basically requires
-     building a "canonical" branching story path in the database?
- - Proper context "chapter" summarization (planned to change).
- - ~~Work properly when switching conversations due to OpenWebUI
-   limitations. The chat ID is not available on incoming requests for
-   some reason, so a janky workaround is used when processing LLM
-   responses.~~ Fixed! (but still in a very hacky way)
- - Clear out information of old conversations or expire irrelevant
-   data.
-
-Other things to do or improve:
- - Set a minimum search score, to prevent useless stuff from coming up.
- - Figure out how to expire or update information about characters and
-   events, instead of dumping it all into the vector DB.
- - Improve multi-user handling. Should technically sort of work due to
-   messages having UUIDs, but is a bit messy. Only one collection is
-   used, so multiple users = concurrency issues?
- - Block user input while updating the knowledgebase.
-
 ## GPU Scaling Filter
+
+_Deprecated. Use the setting in OpenWebUI chat controls._
 
 This is a simple filter that reduces the number of GPU layers in use
 by Ollama when it detects that Ollama has crashed (via empty response
@@ -269,7 +182,7 @@ volume of traffic (absolute max 1 API call per second). If you are
 running a production service, you should set up your own Nominatim and
 Overpass services with caching.
 
-## How to enable 'Where is the closest X to my location?'
+### How to enable 'Where is the closest X to my location?'
 
 In order to have the OSM tool be able to answer questions like "where
 is the nearest grocery store to me?", it needs access to your realtime
@@ -281,6 +194,27 @@ location. This can be accomplished with the following steps:
    reported by the browser into the model's system prompt on every
    message.
 
+# Collapsible Thought Filter
+
+Hides model reasoning/thinking processes in a collapisble block in the
+UI response, similar to OpenAI o1 replies in ChatGPT. Designed to be
+used with [Reflection 70b](https://ollama.com/library/reflection) and
+similar models.
+
+Current settings:
+
+ - Priority: what order to run this filter in.
+ - Thought Title: the title of the collapsed thought block.
+ - Thought Tag: The XML tag that contains the model's reasoning.
+ - Output Tag: The XML tag that contains the model's final output.
+ - Use Thoughts As Context: Whether or not to send LLM reasoning text
+   as context. Disabled by default because it drastically increases
+   token use.
+
+**Note on XML tag settings:** These should be tags WITHOUT the `<>`.
+If you customize the tag setting, make sure your setting is just
+`mytag` and not `<mytag>` or anything else.
+
 # License
 
 <img src="./agplv3.png" alt="AGPLv3" />
@@ -291,6 +225,10 @@ from as you see fit, as long as you extend that same freedom to
 others, in accordance with the terms of the AGPL. Make sure you are
 aware how this might affect your OpenWebUI deployment, if you are
 deploying OpenWebUI in a public environment!
+
+Some filters may have code in them subject to other licenses. In those
+cases, the licenses and what parts of the code they apply to are
+detailed in that specific file.
 
 [agpl]: https://www.gnu.org/licenses/agpl-3.0.en.html
 [checkpoint-filter]: #checkpoint-summarization-filter
