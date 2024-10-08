@@ -2,9 +2,9 @@
 title: GPU Scaling Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.1
+version: 0.2.2
 license: AGPL-3.0+
-required_open_webui_version: 0.3.9
+required_open_webui_version: 0.3.32
 """
 
 # Documentation: https://git.agnos.is/projectmoon/open-webui-filters
@@ -18,7 +18,7 @@ from typing import Callable, Awaitable, Any, Optional, Literal
 import json
 
 # OpenWebUI imports
-from open_webui.apps.rag.vector.connector import VECTOR_DB_CLIENT
+from open_webui.apps.retrieval.vector.connector import VECTOR_DB_CLIENT
 from utils.misc import get_last_user_message, get_last_assistant_message
 from apps.ollama.main import generate_chat_completion, GenerateChatCompletionForm
 from apps.webui.models.users import UserModel

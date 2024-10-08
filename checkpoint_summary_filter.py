@@ -2,9 +2,9 @@
 title: Checkpoint Summary Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.1
+version: 0.2.2
 license: AGPL-3.0+
-required_open_webui_version: 0.3.29
+required_open_webui_version: 0.3.32
 """
 
 # Documentation: https://git.agnos.is/projectmoon/open-webui-filters
@@ -28,8 +28,8 @@ from chromadb import Collection as ChromaCollection
 from chromadb.api.types import Document as ChromaDocument
 
 # OpenWebUI imports
-from open_webui.apps.rag.vector.connector import VECTOR_DB_CLIENT
-from open_webui.apps.rag.main import app as rag_app
+from open_webui.apps.retrieval.vector.connector import VECTOR_DB_CLIENT
+from open_webui.apps.retrieval.main import app as rag_app
 from open_webui.apps.ollama.main import app as ollama_app
 from open_webui.apps.ollama.main import show_model_info, ModelNameForm
 from open_webui.utils.misc import get_last_user_message, get_last_assistant_message
