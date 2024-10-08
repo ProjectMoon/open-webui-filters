@@ -108,6 +108,9 @@
 
 # Checkpoint Summarization Filter
 
+**0.2.2:**
+ - Fix imports for OpenWebUI refactoring.
+
 **0.2.1:**
  - Fix `None - int` error when setting num_ctx in a chat, and then
    unsetting it.
@@ -128,6 +131,9 @@
 
 
 # GPU Scaling Filter
+
+**0.2.2:**
+ - Fix imports for OpenWebUI refactoring.
 
 **0.2.1:**
  - Fixes for internal OpenWebUI refactoring.
