@@ -2,7 +2,7 @@
 title: Artificium Thought Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.1.0
+version: 0.1.1
 license: AGPL-3.0+, MIT
 required_open_webui_version: 0.3.32
 """
@@ -61,16 +61,6 @@ THOUGHT_ENCLOSURE = """
 </details>
 """
 
-DEFAULT_THOUGHT_PLAN = """
-Your task execution plan should be:
- - Break down the problem into the smallest possible steps
- - Come up with a plan to solve each step, then execute each step.
- - Analyze each step for mistakes, correct any mistakes found in each step.
- - Finally, output the solution based on your reasoning.
-
-In your reply, break your reasoning down into "Plan", "Execution", "Mistake Analysis", and "Final Output". These should be ## Markdown Headers.
-"""
-
 DETAIL_DELETION_REGEX = r"</?details>[\s\S]*?</details>"
 
 class Filter:
@@ -96,23 +86,9 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
 
-    def _create_thought_regex(self) -> str:
-        tag = self.valves.thought_tag
-        return f"<{tag}>(.*?)</{tag}>"
-
-    def _create_thought_tag_deletion_regex(self) -> str:
-        tag = self.valves.thought_tag
-        return "</?{{THINK}}>[\s\S]*?</{{THINK}}>".replace("{{THINK}}", tag)
-
-    def _create_output_tag_deletion_regex(self) -> str:
-        tag = self.valves.output_tag
-        return r"</?{{OUT}}>[\s\S]*?</{{OUT}}>".replace("{{OUT}}", tag)
-
     def _parse_reply(self, messages: List[Dict[str, str]]) -> dict:
         reply = messages[-1]["content"]
-        pattern = r'((?<=\n---\n)|^)(.*?)(?=---\n|$)'
-        matches = re.findall(pattern, reply, flags=re.DOTALL)
-        sections = [match[1].strip() for match in matches if match[0] == '']
+        sections = [section.strip() for section in reply.split('\n\n---\n\n')]
         sections = [section for section in sections if section]
         print(f"[Artificium Filter] Parsed {len(sections)} section(s)")
 
