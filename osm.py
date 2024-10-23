@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 1.0.0
+version: 1.1.0
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 requirements: openrouteservice
@@ -15,9 +15,9 @@ import requests
 import openrouteservice
 from openrouteservice.directions import directions as ors_directions
 
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin
 from operator import itemgetter
-from typing import List, Optional, Callable, Any
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 NOMINATIM_LOOKUP_TYPES = {
@@ -165,7 +165,7 @@ def merge_from_nominatim(thing, nominatim_result) -> Optional[dict]:
         thing['name'] = nominatim_name.strip()
     elif nominatim_road and not thing_name:
         thing['name'] = nominatim_road.strip()
-    elif nominati_display_name and not thing_name:
+    elif nominatim_display_name and not thing_name:
         thing['name'] = nominatim_display_name.strip()
 
     tags = thing.get('tags', {})
@@ -1098,10 +1098,9 @@ class Tools:
         self.valves = self.Valves()
         self.user_valves = None
 
-    async def find_address_for_ccoordinates(self, latitude: float, longitude: float, __event_emitter__) -> str:
+    async def find_address_for_coordinates(self, latitude: float, longitude: float, __event_emitter__) -> str:
         """
-        Resolves GPS coordinates to a specific address or place. Use this first to
-        convert GPS coordinates before calling another function to look up information.
+        Resolves GPS coordinates to a specific address or place.
         :param latitude: The latitude portion of the GPS coordinate.
         :param longitude: The longitude portion of the GPS coordinate.
         :return: Information about the address or place at the coordinates.
@@ -1109,16 +1108,16 @@ class Tools:
         print(f"[OSM] Resolving [{latitude}, {longitude}] to address.")
         return await self.find_specific_place(f"{latitude}, {longitude}", __event_emitter__)
 
-    async def find_specific_store_near_coordinates(
+    async def find_store_or_place_near_coordinates(
             self, store_or_business_name: str, latitude: float, longitude: float, __event_emitter__
     ) -> str:
         """
-        Finds specifically named stores or businesses near the given
+        Finds specifically named stores, businesses, or landmarks near the given
         GPS coordinates. This can be used for general or specific things,
         like 'gas station' or 'grocery store', or the name of a specific
         chain (like 'Wal-Mart' or 'Albert Heijn'). This function is intended
         for finding specific chains or businesses near the given coordinates.
-        Use this if the user asks about businesses nearby.
+        Use this if the user asks about businesses or places nearby.
         :param store_or_business_name: Name of store or business to look for.
         :param latitude: The latitude portion of the GPS coordinate.
         :param longitude: The longitude portion of the GPS coordinate.

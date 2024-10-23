@@ -1,5 +1,9 @@
 # OpenStreetMap Tool
 
+**1.1.0:**
+ - Fix bad check in fallback name assembly behavior.
+ - Slightly alter functions to improve specific place search.
+
 **1.0.0:**
  - Breaking change: Nominatim URL must now be set to the root domain.
    The model will warn you about this.
@@ -155,6 +159,15 @@
  - Initial Release
 
 # Collapsible Thought Filter
+
+**0.1.0:**
+ - Initial release.
+
+# Artificium Thinking Filter
+
+**0.1.1:**
+ - More reliable discovery of thinking and output sections.
+ - Remove dead code.
 
 **0.1.0:**
  - Initial release.
