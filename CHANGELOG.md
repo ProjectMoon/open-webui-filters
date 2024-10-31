@@ -1,5 +1,10 @@
 # OpenStreetMap Tool
 
+**1.1.1:**
+ - Send resolution complete event when pulling Nominatim info from
+   cache.
+ - Send error event when headers not set for Nominatim search.
+
 **1.1.0:**
  - Fix bad check in fallback name assembly behavior.
  - Slightly alter functions to improve specific place search.

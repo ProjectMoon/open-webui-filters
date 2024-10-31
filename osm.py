@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 1.1.0
+version: 1.1.1
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 requirements: openrouteservice
@@ -806,6 +806,7 @@ class OsmSearcher:
 
         if data:
             print(f"Got nominatim search data for {query} from cache!")
+            await self.event_resolving(done=True)
             return data[:limit]
 
         print(f"Searching Nominatim for: {query}")
@@ -820,6 +821,7 @@ class OsmSearcher:
 
         headers = self.create_headers()
         if not headers:
+            await self.event_error("Headers not set")
             raise ValueError("Headers not set")
 
         response = requests.get(url, params=params, headers=headers)
