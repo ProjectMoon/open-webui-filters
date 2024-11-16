@@ -395,7 +395,7 @@ def parse_and_validate_thing(thing: dict) -> Optional[dict]:
                  else str(thing['osm_id']) if 'osm_id' in thing
                  else "unknown")
 
-    address: string = parse_thing_address(thing)
+    address: str = parse_thing_address(thing)
     distance: Optional[float] = thing.get('distance', None)
     nav_distance: Optional[float] = thing.get('nav_distance', None)
 
@@ -966,6 +966,7 @@ class OsmSearcher:
             if 'display_name' in nominatim_result:
                 place_display_name = ",".join(nominatim_result['display_name'].split(",")[:3])
             else:
+                print(f"WARN: Could not find display name for place: {place}")
                 place_display_name = place
 
             await self.event_searching(category, place_display_name, done=False)
