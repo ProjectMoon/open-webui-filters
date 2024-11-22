@@ -2,16 +2,17 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 1.1.2
+version: 1.2.0
 license: AGPL-3.0+
-required_open_webui_version: 0.3.21
-requirements: openrouteservice
+required_open_webui_version: 0.4.3
+requirements: openrouteservice, markdown
 """
 import itertools
 import json
 import math
 import requests
 
+import markdown
 import openrouteservice
 from openrouteservice.directions import directions as ors_directions
 
@@ -955,21 +956,28 @@ class OsmSearcher:
     async def search_nearby(
             self, place: str, tags: List[str], limit: int=5, radius: int=4000,
             category: str="POIs"
-    ) -> str:
+    ) -> dict:
         headers = self.create_headers()
         if not headers:
-            return VALVES_NOT_SET
+            return { "place_display_name": place, "results": VALVES_NOT_SET }
 
         try:
             nominatim_result = await self.nominatim_search(place, limit=1)
             if not nominatim_result:
                 await self.event_search_complete(category, place, 0)
-                return NO_RESULTS
+                return { "place_display_name": place, "results": NO_RESULTS }
 
             nominatim_result = nominatim_result[0]
+
             # display friendlier searching message if possible
             if 'display_name' in nominatim_result:
                 place_display_name = ",".join(nominatim_result['display_name'].split(",")[:3])
+            elif 'address' in nominatim_result:
+                addr = parse_thing_address(nominatim_result)
+                if addr is not None:
+                    place_display_name = ",".join(addr.split(",")[:3])
+                else:
+                    place_display_name = place
             else:
                 print(f"WARN: Could not find display name for place: {place}")
                 place_display_name = place
@@ -987,8 +995,8 @@ class OsmSearcher:
                                                          bbox, limit, radius)
 
             if not things_nearby or len(things_nearby) == 0:
-                await self.event_search_complete(category, place, 0)
-                return NO_RESULTS
+                await self.event_search_complete(category, place_display_name, 0)
+                return { "place_display_name": place, "results": NO_RESULTS }
 
             tag_type_str = ", ".join(tags)
 
@@ -1008,16 +1016,17 @@ class OsmSearcher:
 
             print(resp)
             await self.event_search_complete(category, place_display_name, len(things_nearby))
-            return resp
+            return { "place_display_name": place_display_name, "results": resp }
         except ValueError:
             await self.event_search_complete(category, place_display_name, 0)
-            return NO_RESULTS
+            return { "place_display_name": place_display_name, "results": NO_RESULTS }
         except Exception as e:
             print(e)
             await self.event_error(e)
-            return (f"No results were found, because of an error. "
-                    f"Tell the user that there was an error finding results. "
-                    f"The error was: {e}")
+            result = (f"No results were found, because of an error. "
+                      f"Tell the user that there was an error finding results. "
+                      f"The error was: {e}")
+            return { "place_display_name": place_display_name, "results": result }
 
 
 async def do_osm_search(
@@ -1041,16 +1050,20 @@ async def do_osm_search(
 
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
     searcher = OsmSearcher(valves, user_valves, event_emitter)
-    results = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
+    search = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
 
+    place_display_name = search["place_display_name"]
+    results = search["results"]
+
+    # send a citation about what we found.
     if valves.status_indicators and event_emitter is not None:
         # we generally assume that category is plural.
         await event_emitter({
-            "type": "citation",
+            "type": "source",
             "data": {
-                "document": [results],
-                "metadata": [{"source": "OpenStreetMap"}],
-                "source": {"name": f"{category.title()} near {place}"},
+                "document": [markdown.markdown(results)],
+                "metadata": [{"source": "OpenStreetMap", "html": True }],
+                "source": {"name": f"{category.title()} near {place_display_name}"},
             }
         })
 

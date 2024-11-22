@@ -1,5 +1,15 @@
 # OpenStreetMap Tool
 
+**1.2.0:**
+ - Update citations for compatibility with 0.4.3.
+ - Very basic prettification of citation by converting the Markdown to
+   HTML.
+ - Show friendlier name for citation when searching for POIs (usually
+   address instead of GPS coordinates).
+
+**1.1.3:**
+ - Better friendly display names when an address is available.
+
 **1.1.2:**
  - Fix misleading Nominatim resolution complete event that was
    communicating as still resolving.
