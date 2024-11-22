@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 1.1.1
+version: 1.1.2
 license: AGPL-3.0+
 required_open_webui_version: 0.3.21
 requirements: openrouteservice
@@ -587,9 +587,14 @@ class OsmSearcher:
             'From': self.valves.from_header
         }
 
-    async def event_resolving(self, done: bool=False, message="OpenStreetMap: resolving..."):
+    async def event_resolving(self, done: bool=False):
         if not self.event_emitter or not self.valves.status_indicators:
             return
+
+        if done:
+            message = "OpenStreetMap: resolution complete."
+        else:
+            message = "OpenStreetMap: resolving..."
 
         await self.event_emitter({
             "type": "status",
@@ -826,7 +831,7 @@ class OsmSearcher:
 
         response = requests.get(url, params=params, headers=headers)
         if response.status_code == 200:
-            await self.event_resolving(done=True, message="OpenStreetMap: resolution complete.")
+            await self.event_resolving(done=True)
             data = response.json()
 
             if not data:

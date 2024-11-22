@@ -1,5 +1,9 @@
 # OpenStreetMap Tool
 
+**1.1.2:**
+ - Fix misleading Nominatim resolution complete event that was
+   communicating as still resolving.
+
 **1.1.1:**
  - Send resolution complete event when pulling Nominatim info from
    cache.
