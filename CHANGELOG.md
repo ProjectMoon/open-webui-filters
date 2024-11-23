@@ -179,6 +179,9 @@
 
 # Collapsible Thought Filter
 
+**0.2.0:**
+ - Fix issue with output disappearing.
+
 **0.1.0:**
  - Initial release.
 

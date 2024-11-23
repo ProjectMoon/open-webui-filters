@@ -2,7 +2,7 @@
 title: Collapsible Thought Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.1.0
+version: 0.2.0
 license: AGPL-3.0+, MIT
 required_open_webui_version: 0.3.32
 """
@@ -87,6 +87,10 @@ class Filter:
         tag = self.valves.thought_tag
         return f"<{tag}>(.*?)</{tag}>"
 
+    def _create_output_regex(self) -> str:
+        tag = self.valves.output_tag
+        return f"<{tag}>(.*?)</{tag}>"
+
     def _create_thought_tag_deletion_regex(self) -> str:
         tag = self.valves.thought_tag
         return "</?{{THINK}}>[\s\S]*?</{{THINK}}>".replace("{{THINK}}", tag)
@@ -101,9 +105,18 @@ class Filter:
 
         # collapsible thinking process section
         thought_regex = self._create_thought_regex()
+        output_regex = self._create_output_regex()
         reply = messages[-1]["content"]
+
         thoughts = re.findall(thought_regex, reply, re.DOTALL)
         thoughts = "\n".join(thoughts).strip()
+
+        output = re.findall(output_regex, reply, re.DOTALL)
+        output = "\n".join(output).strip()
+
+        print(thoughts)
+        print(output)
+
         enclosure = THOUGHT_ENCLOSURE.replace("{{THOUGHT_TITLE}}", self.valves.thought_title)
         enclosure = enclosure.replace("{{THOUGHTS}}", thoughts).strip()
 
@@ -115,6 +128,13 @@ class Filter:
         reply = re.sub(output_tag_deletion_regex, "", reply, count=1)
         reply = reply.replace(f"<{self.valves.output_tag}>", "", 1)
         reply = reply.replace(f"</{self.valves.output_tag}>", "", 1)
+
+        # because some models do not close the output tag, we prefer
+        # using the captured output via regex, but if that does not
+        # work, we use whatever's left over as the output (which is
+        # already set).
+        if output is not None and len(output) > 0:
+            reply = output
 
         # prevents empty thought process blocks when filter used with
         # malformed LLM output.
