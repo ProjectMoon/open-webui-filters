@@ -114,9 +114,6 @@ class Filter:
         output = re.findall(output_regex, reply, re.DOTALL)
         output = "\n".join(output).strip()
 
-        print(thoughts)
-        print(output)
-
         enclosure = THOUGHT_ENCLOSURE.replace("{{THOUGHT_TITLE}}", self.valves.thought_title)
         enclosure = enclosure.replace("{{THOUGHTS}}", thoughts).strip()
 
