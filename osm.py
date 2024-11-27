@@ -2,17 +2,20 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 1.2.0
+version: 1.3.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
-requirements: openrouteservice, markdown
+requirements: openrouteservice, pygments
 """
 import itertools
 import json
 import math
 import requests
 
-import markdown
+from pygments import highlight
+from pygments.lexers import JsonLexer
+from pygments.formatters import HtmlFormatter
+
 import openrouteservice
 from openrouteservice.directions import directions as ors_directions
 
@@ -20,6 +23,20 @@ from urllib.parse import urljoin
 from operator import itemgetter
 from typing import List, Optional
 from pydantic import BaseModel, Field
+
+# Yoinked from the OpenWebUI CSS
+FONT_CSS = """
+html { font-family: -apple-system,BlinkMacSystemFont,Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif,Helvetica Neue,Arial,"Apple Color Emoji","Segoe UI Emoji",Segoe UI Symbol,"Noto Color Emoji"; }
+
+@media (prefers-color-scheme: dark) {
+  html {
+    --tw-text-opacity: 1;
+    color: rgb(227 227 227 / var(--tw-text-opacity));
+  }
+}
+"""
+
+HIGHLIGHT_CSS = HtmlFormatter().get_style_defs('.highlight')
 
 NOMINATIM_LOOKUP_TYPES = {
     "node": "N",
@@ -178,6 +195,14 @@ def merge_from_nominatim(thing, nominatim_result) -> Optional[dict]:
 
     thing['tags'] = tags
     return thing
+
+def pretty_print_thing_json(thing):
+    """Converts an OSM thing to nice JSON HTML."""
+    formatted_json_str = json.dumps(thing, indent=2)
+    lexer = JsonLexer()
+    formatter = HtmlFormatter(style='colorful')
+    return highlight(formatted_json_str, lexer, formatter)
+
 
 def thing_is_useful(thing):
     """
@@ -399,6 +424,7 @@ def parse_and_validate_thing(thing: dict) -> Optional[dict]:
     address: str = parse_thing_address(thing)
     distance: Optional[float] = thing.get('distance', None)
     nav_distance: Optional[float] = thing.get('nav_distance', None)
+    opening_hours: Optional[str] = tags.get('opening_hours', None)
 
     lat: Optional[float] = thing.get('lat', None)
     lon: Optional[float] = thing.get('lon', None)
@@ -418,6 +444,7 @@ def parse_and_validate_thing(thing: dict) -> Optional[dict]:
     friendly_thing['lat'] = lat if lat else "unknown"
     friendly_thing['lon'] = lon if lon else "unknown"
     friendly_thing['amenity_type'] = amenity_type if amenity_type else "unknown"
+    friendly_thing['opening_hours'] = opening_hours if opening_hours else "not recorded"
     return friendly_thing
 
 def create_osm_link(lat, lon):
@@ -646,6 +673,61 @@ class OsmSearcher:
                 "description": f"OpenStreetMap: found {num_results} '{category}' results",
                 "done": True,
             },
+        })
+
+    def create_result_document(self, thing) -> Optional[dict]:
+        original_thing = thing
+        thing = parse_and_validate_thing(thing)
+
+        if not thing:
+            return None
+
+        if 'address' in original_thing:
+            street = get_or_none(original_thing['address'], "road")
+        else:
+            street = get_or_none(original_thing['tags'], "addr:street")
+
+        street_name = street if street is not None else ""
+        source_name = f"{thing['name']} {street_name}"
+        lat, lon = thing['lat'], thing['lon']
+        osm_link = create_osm_link(lat, lon)
+        json_data = pretty_print_thing_json(original_thing)
+        addr = f"at {thing['address']}" if thing['address'] != 'unknown' else 'nearby'
+
+        document = (f"<style>{HIGHLIGHT_CSS}</style>"
+                    f"<style>{FONT_CSS}</style>"
+                    f"<div>"
+                    f"<p>{thing['name']} is located {addr}.</p>"
+                    f"<ul>"
+                    f"<li>"
+                    f"  <strong>Opening Hours:</strong> {thing['opening_hours']}"
+                    f"</li>"
+                    f"</ul>"
+                    f"<p>Raw JSON data:</p>"
+                    f"{json_data}"
+                    f"</div>")
+
+        return { "source_name": source_name, "document": document, "osm_link": osm_link }
+
+    async def emit_result_citation(self, thing):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        converted = self.create_result_document(thing)
+        if not converted:
+            return
+
+        source_name = converted["source_name"]
+        document = converted["document"]
+        osm_link = converted["osm_link"]
+
+        await self.event_emitter({
+            "type": "source",
+            "data": {
+                "document": [document],
+                "metadata": [{"source": source_name, "html": True }],
+                "source": {"name": source_name, "url": osm_link},
+            }
         })
 
     async def event_error(self, exception: Exception):
@@ -1014,8 +1096,11 @@ class OsmSearcher:
                 f"{search_results}"
             )
 
-            print(resp)
+            # emit citations for the actual results.
             await self.event_search_complete(category, place_display_name, len(things_nearby))
+            for thing in things_nearby:
+                await self.emit_result_citation(thing)
+
             return { "place_display_name": place_display_name, "results": resp }
         except ValueError:
             await self.event_search_complete(category, place_display_name, 0)
@@ -1053,21 +1138,7 @@ async def do_osm_search(
     search = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
 
     place_display_name = search["place_display_name"]
-    results = search["results"]
-
-    # send a citation about what we found.
-    if valves.status_indicators and event_emitter is not None:
-        # we generally assume that category is plural.
-        await event_emitter({
-            "type": "source",
-            "data": {
-                "document": [markdown.markdown(results)],
-                "metadata": [{"source": "OpenStreetMap", "html": True }],
-                "source": {"name": f"{category.title()} near {place_display_name}"},
-            }
-        })
-
-    return results
+    return search["results"]
 
 
 class Tools:

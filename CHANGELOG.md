@@ -1,5 +1,8 @@
 # OpenStreetMap Tool
 
+**1.3.0:**
+ - Emit one citation per result, with nicely formatted text.
+
 **1.2.0:**
  - Update citations for compatibility with 0.4.3.
  - Very basic prettification of citation by converting the Markdown to
