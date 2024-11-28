@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 1.3.0
+version: 1.3.1
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -25,15 +25,24 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 # Yoinked from the OpenWebUI CSS
-FONT_CSS = """
-html { font-family: -apple-system,BlinkMacSystemFont,Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif,Helvetica Neue,Arial,"Apple Color Emoji","Segoe UI Emoji",Segoe UI Symbol,"Noto Color Emoji"; }
+FONTS = ",".join([
+    "-apple-system", "BlinkMacSystemFont", "Inter",
+    "ui-sans-serif", "system-ui", "Segoe UI",
+    "Roboto", "Ubuntu", "Cantarell", "Noto Sans",
+    "sans-serif", "Helvetica Neue", "Arial",
+    "\"Apple Color Emoji\"", "\"Segoe UI Emoji\"",
+    "Segoe UI Symbol", "\"Noto Color Emoji\""
+])
 
-@media (prefers-color-scheme: dark) {
-  html {
+FONT_CSS = f"""
+html {{ font-family: {FONTS}; }}
+
+@media (prefers-color-scheme: dark) {{
+  html {{
     --tw-text-opacity: 1;
     color: rgb(227 227 227 / var(--tw-text-opacity));
-  }
-}
+  }}
+}}
 """
 
 HIGHLIGHT_CSS = HtmlFormatter().get_style_defs('.highlight')
@@ -67,6 +76,15 @@ of use: https://operations.osmfoundation.org/policies/nominatim/
 NO_RESULTS = ("No results found. Tell the user you found no results. "
               "Do not make up answers or hallucinate. Only say you "
               "found no results.")
+
+NO_RESULTS_BAD_ADDRESS = ("No results found. Tell the user you found no results because "
+                          "OpenStreetMap could not resolve the address. "
+                          "Print the exact address or location you searched for. "
+                          "Suggest to the user that they refine their "
+                          "question, for example removing the apartment number, sub-unit, "
+                          "etc. Example: If `123 Main Street, Apt 4` returned no results, "
+                          "suggest that the user searc for `123 Main Street` instead. "
+                          "Use the address the user searched for in your example.")
 
 NO_CONFUSION = ("**IMPORTANT!:** Check that the results match the location "
                 "the user is talking about, by analyzing the conversation history. "
@@ -1045,10 +1063,14 @@ class OsmSearcher:
 
         try:
             nominatim_result = await self.nominatim_search(place, limit=1)
-            if not nominatim_result:
-                await self.event_search_complete(category, place, 0)
-                return { "place_display_name": place, "results": NO_RESULTS }
+        except ValueError:
+            nominatim_result = []
 
+        if not nominatim_result or len(nominatim_result) == 0:
+            await self.event_search_complete(category, place, 0)
+            return { "place_display_name": place, "results": NO_RESULTS_BAD_ADDRESS }
+
+        try:
             nominatim_result = nominatim_result[0]
 
             # display friendlier searching message if possible
@@ -1073,12 +1095,15 @@ class OsmSearcher:
                 'maxlon': nominatim_result['boundingbox'][3]
             }
 
+            print(f"[OSM] Searching for {category} near {place_display_name}")
             things_nearby = await self.get_things_nearby(nominatim_result, place, tags,
                                                          bbox, limit, radius)
 
             if not things_nearby or len(things_nearby) == 0:
                 await self.event_search_complete(category, place_display_name, 0)
                 return { "place_display_name": place, "results": NO_RESULTS }
+
+            print(f"[OSM] Found {len(things_nearby)} {category} results near {place_display_name}")
 
             tag_type_str = ", ".join(tags)
 
