@@ -1,5 +1,10 @@
 # OpenStreetMap Tool
 
+**1.3.1:**
+ - Handle bad or unclear addresses by having the model tell you.
+ - Fix a swallowed exception that resulted in no results, but no
+   notification of finding no results.
+
 **1.3.0:**
  - Emit one citation per result, with nicely formatted text.
 
