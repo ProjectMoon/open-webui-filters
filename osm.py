@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 1.3.1
+version: 2.0.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -122,6 +122,18 @@ def specific_place_instructions() -> str:
         "about. **IMPORTANT!:** Tell the user all relevant information, "
         "including address, contact information, and the OpenStreetMap link. "
         "Make the map link into a nice human-readable markdown link."
+    )
+
+def navigation_instructions(travel_type) -> str:
+    return (
+        "# Result Instructions\n"
+        "This is the navigation route that the user has requested. "
+        f"These instructions are for travel by {travel_type}. "
+        "Tell the user the total distance, "
+        "and estimated travel time. "
+        "If the user **specifically asked for it**, also tell "
+        "them the route itself. When telling the route, you must tell "
+        f"the user that it's a **{travel_type}** route."
     )
 
 def detailed_instructions(tag_type_str: str) -> str:
@@ -567,8 +579,9 @@ class OsmCache:
 
 class OrsRouter:
     def __init__(
-            self, valves, user_valves: Optional[dict], event_emitter=None
+            self, valves, user_valves: Optional[dict], event_emitter=None,
     ):
+        self.cache = OsmCache()
         self.valves = valves
         self.event_emitter = event_emitter
         self.user_valves = user_valves
@@ -585,13 +598,13 @@ class OrsRouter:
             self._client = None
 
 
-    def calculate_distance(
+    def calculate_route(
             self, from_thing: dict, to_thing: dict
-    ) -> Optional[float]:
+    ) -> Optional[dict]:
         """
-        Calculate navigation distance between A and B. Returns the
-        distance calculated, if successful, or None if the distance
-        could not be calculated, or if ORS is not configured.
+        Calculate route between A and B. Returns the route,
+        if successful, or None if the distance could not be
+        calculated, or if ORS is not configured.
         """
         if not self._client:
             return None
@@ -608,14 +621,36 @@ class OrsRouter:
         coords = ((from_thing['lon'], from_thing['lat']),
                   (to_thing['lon'], to_thing['lat']))
 
+        # check cache first.
+        cache_key = f"ors_route_{str(coords)}"
+        cached_route = self.cache.get(cache_key)
+        if cached_route:
+            print("[OSM] Got route from cache!")
+            return cached_route
+
         resp = ors_directions(self._client, coords, profile=profile,
                               preference="fastest", units="km")
+
         routes = resp.get('routes', [])
         if len(routes) > 0:
-            return routes[0].get('summary', {}).get('distance', None)
+            self.cache.set(cache_key, routes[0])
+            return routes[0]
         else:
             return None
 
+    def calculate_distance(
+            self, from_thing: dict, to_thing: dict
+    ) -> Optional[float]:
+        """
+        Calculate navigation distance between A and B. Returns the
+        distance calculated, if successful, or None if the distance
+        could not be calculated, or if ORS is not configured.
+        """
+        if not self._client:
+            return None
+
+        route = self.calculate_route(from_thing, to_thing)
+        return route.get('summary', {}).get('distance', None) if route else None
 
 class OsmSearcher:
     def __init__(self, valves, user_valves: Optional[dict], event_emitter=None):
@@ -774,9 +809,9 @@ class OsmSearcher:
             nav_distance = cache.get(cache_key)
 
             if nav_distance:
-                print(f"Got nav distance for {thing['id']} from cache!")
+                print(f"[OSM] Got nav distance for {thing['id']} from cache!")
             else:
-                print(f"Checking ORS for {thing['id']}")
+                print(f"[OSM] Checking ORS for {thing['id']}")
                 nav_distance = self.calculate_navigation_distance(origin, thing)
 
             if nav_distance:
@@ -859,7 +894,7 @@ class OsmSearcher:
         lookups = [id for id in lookups if id not in lookups_to_remove]
 
         if len(lookups) == 0:
-            print("Got all Nominatim info from cache!")
+            print("[OSM] Got all Nominatim info from cache!")
             await self.event_fetching(done=True)
             return updated_things
         else:
@@ -881,7 +916,7 @@ class OsmSearcher:
             data = response.json()
 
             if not data:
-                print("No results found for lookup")
+                print("[OSM] No results found for lookup")
                 await self.event_fetching(done=True)
                 return []
 
@@ -911,11 +946,11 @@ class OsmSearcher:
         data = cache.get(cache_key)
 
         if data:
-            print(f"Got nominatim search data for {query} from cache!")
+            print(f"[OSM] Got nominatim search data for {query} from cache!")
             await self.event_resolving(done=True)
             return data[:limit]
 
-        print(f"Searching Nominatim for: {query}")
+        print(f"[OSM] Searching Nominatim for: {query}")
 
         url = urljoin(self.valves.nominatim_url, "search")
         params = {
@@ -1165,6 +1200,97 @@ async def do_osm_search(
     place_display_name = search["place_display_name"]
     return search["results"]
 
+class OsmNavigator:
+    def __init__(
+        self, valves, user_valves: Optional[dict], event_emitter=None,
+    ):
+        self.valves = valves
+        self.event_emitter = event_emitter
+        self.user_valves = user_valves
+
+    async def event_navigating(self, done: bool):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        if done:
+            message = "OpenStreetMap: navigation complete"
+        else:
+            message = "OpenStreetMap: navigating..."
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "in_progress",
+                "description": message,
+                "done": done,
+            },
+        })
+
+    async def event_error(self, exception: Exception):
+        if not self.event_emitter or not self.valves.status_indicators:
+            return
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "error",
+                "description": f"Error navigating: {str(exception)}",
+                "done": True,
+            },
+        })
+
+    async def navigate(self, start_place: str, destination_place: str):
+        await self.event_navigating(done=False)
+        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
+        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
+
+        try:
+            start = await searcher.nominatim_search(start_place, limit=1)
+            destination = await searcher.nominatim_search(destination_place, limit=1)
+
+            if not start or not destination:
+                await self.event_navigating(done=True)
+                return NO_RESULTS
+
+            start, destination = start[0], destination[0]
+            route = router.calculate_route(start, destination)
+
+            if not route:
+                await self.event_navigating(done=True)
+                return NO_RESULTS
+
+            total_distance = round(route.get('summary', {}).get('distance', ''), 2)
+            travel_time = round(route.get('summary', {}).get('duration', 0) / 60.0, 2)
+            travel_type = "car" if total_distance > 1.5 else "walking/biking"
+
+            instructions = "\n".join([
+                f"- {step['instruction']}"
+                for segment in route["segments"]
+                for step in segment["steps"]]
+            )
+
+            markdown = (
+                "## Routing Instructions\n"
+                f"These are the routing instructions from "
+                f"{start_place} to {destination_place}.\n\n"
+                f" - Total Distance: {total_distance} km\n"
+                f" - Travel Time: {str(travel_time)} minutes"
+                "\n\n"
+                "Navigation Instructions:\n\n"
+                f"{instructions}"
+            )
+
+            resp = f"{navigation_instructions(travel_type)}\n\n{markdown}"
+            await self.event_navigating(done=True)
+            return resp
+        except Exception as e:
+            print(e)
+            await self.event_error(e)
+            return (f"There are no results due to an error. "
+                    "Tell the user that there was an error. "
+                    f"The error was: {e}. "
+                    f"Tell the user the error message.")
+
 
 class Tools:
     class Valves(BaseModel):
@@ -1276,6 +1402,22 @@ class Tools:
                     f"Tell the user the error message.")
 
 
+    async def navigate_between_places(
+            self,
+            start_address_or_place: str,
+            destination_address_or_place: str,
+            __event_emitter__
+    ) -> str:
+        """
+        Retrieve a navigation route and associated information between two places.
+        :param start_address_or_place: The address, place, or coordinates to start from.
+        :param destination_address_or_place: The destination address, place, or coordinates to go.
+        :return: The navigation route and associated info, if found.
+        """
+        print(f"[OSM] Navigating from [{start_address_or_place}] to [{destination_address_or_place}].")
+        navigator = OsmNavigator(self.valves, self.user_valves, __event_emitter__)
+        return await navigator.navigate(start_address_or_place, destination_address_or_place)
+
     async def find_grocery_stores_near_place(
             self, place: str, __user__: dict, __event_emitter__
     ) -> str:
@@ -1371,6 +1513,20 @@ class Tools:
         tags = ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course",
                 "leisure=park", "leisure=amusement_arcade", "tourism=theme_park"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="recreational activities",
+                                   limit=10, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
+
+    async def find_tourist_attractions_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+        """
+        Finds museums, sculptures, landmarks, and other tourist attractions on OpenStreetMap near
+        a given place or address. The location of the address or place is reverse geo-coded,
+        then nearby results are fetched from OpenStreetMap.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :return: A list of tourist attractions, if found.
+        """
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["tourism=museum", "tourism=aquarium", "tourism=zoo",
+                "tourism=attraction", "tourism=gallery", "tourism=viewpoint"]
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="tourist attractions",
                                    limit=10, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
 
 
