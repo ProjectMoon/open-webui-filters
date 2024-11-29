@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 2.0.0
+version: 2.1.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -250,9 +250,22 @@ def thing_is_useful(thing):
         'car:rental' in tags or
         'rental' in tags or
         'car_rental' in tags or
-        'service:bicycle:rental' in tags
+        'service:bicycle:rental' in tags or
+        'tourism' in tags
     )
-    return has_tags and has_useful_tags
+
+    # there can be a lot of artwork in city centers. drop ones that
+    # aren't as notable. we define notable by the thing having wiki
+    # entries, or by being tagged as historical.
+    if tags.get('tourism', '') == 'artwork':
+        notable = (
+            'wikipedia' in tags or
+            'wikimedia_commons' in tags
+        )
+    else:
+        notable = True
+
+    return has_tags and has_useful_tags and notable
 
 def thing_has_info(thing):
     has_name = any('name' in tag for tag in thing['tags'])
@@ -316,6 +329,28 @@ def sort_by_closeness(origin, points, *keys: str):
     The origin is a dict with keys of { lat, lon }.
     """
     return sorted(points, key=itemgetter(*keys))
+
+def sort_by_rank(things):
+    """
+    Calculate a rank for a list of things. More important ones are
+    pushed towards the top. Currently only for tourism tags.
+    """
+    def rank_thing(thing: dict) -> int:
+        tags = thing.get('tags', {})
+        if not 'tourism' in tags:
+            return 0
+
+        rank = len([name for name in tags.keys()
+                         if name.startswith("name")])
+        rank += 5 if 'historic' in tags else 0
+        rank += 5 if 'wikipedia' in tags else 0
+        rank += 1 if 'wikimedia_commons' in tags else 0
+        rank += 5 if tags.get('tourism', '') == 'museum' else 0
+        rank += 5 if tags.get('tourism', '') == 'aquarium' else 0
+        rank += 5 if tags.get('tourism', '') == 'zoo' else 0
+        return rank
+
+    return sorted(things, reverse=True, key=lambda t: (rank_thing(t), -t['distance']))
 
 def get_or_none(tags: dict, *keys: str) -> Optional[str]:
     """
@@ -812,7 +847,12 @@ class OsmSearcher:
                 print(f"[OSM] Got nav distance for {thing['id']} from cache!")
             else:
                 print(f"[OSM] Checking ORS for {thing['id']}")
-                nav_distance = self.calculate_navigation_distance(origin, thing)
+                try:
+                    nav_distance = self.calculate_navigation_distance(origin, thing)
+                except Exception as e:
+                    print(f"[OSM] Error querying ORS: {e}")
+                    print(f"[OSM] Falling back to regular distance due to ORS error!")
+                    nav_distance = thing['distance']
 
             if nav_distance:
                 used_ors = True
@@ -829,7 +869,6 @@ class OsmSearcher:
     def use_detailed_interpretation_mode(self) -> bool:
         # Let user valve for instruction mode override the global
         # setting.
-        print(str(self.user_valves))
         if self.user_valves:
             return self.user_valves.instruction_oriented_interpretation
         else:
@@ -1081,8 +1120,12 @@ class OsmSearcher:
         # enabled, we calculate ORS distances. then we sort again.
         origin = get_bounding_box_center(bbox)
         self.calculate_haversine(origin, things_nearby)
-        things_nearby = sort_by_closeness(origin, things_nearby, 'distance')
+
+        # sort by importance + distance, drop to the liimt, then sort
+        # by closeness.
+        things_nearby = sort_by_rank(things_nearby)
         things_nearby = things_nearby[:limit] # drop down to requested limit
+        things_nearby = sort_by_closeness(origin, things_nearby, 'distance')
 
         if self.attempt_ors(origin, things_nearby):
             things_nearby = sort_by_closeness(origin, things_nearby, 'nav_distance', 'distance')
@@ -1161,17 +1204,17 @@ class OsmSearcher:
             for thing in things_nearby:
                 await self.emit_result_citation(thing)
 
-            return { "place_display_name": place_display_name, "results": resp }
+            return { "place_display_name": place_display_name, "results": resp, "things": things_nearby }
         except ValueError:
             await self.event_search_complete(category, place_display_name, 0)
-            return { "place_display_name": place_display_name, "results": NO_RESULTS }
+            return { "place_display_name": place_display_name, "results": NO_RESULTS, "things": [] }
         except Exception as e:
             print(e)
             await self.event_error(e)
             result = (f"No results were found, because of an error. "
                       f"Tell the user that there was an error finding results. "
                       f"The error was: {e}")
-            return { "place_display_name": place_display_name, "results": result }
+            return { "place_display_name": place_display_name, "results": result, "things": [] }
 
 
 async def do_osm_search(
@@ -1196,9 +1239,31 @@ async def do_osm_search(
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     search = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
-
-    place_display_name = search["place_display_name"]
     return search["results"]
+
+async def do_osm_search_full(
+        valves, user_valves, place, tags,
+        category="POIs", event_emitter=None, limit=5, radius=4000
+):
+    """Like do_osm_search, but return the full result set instead."""
+    # handle breaking 1.0 change, in case of old Nominatim valve settings.
+    if valves.nominatim_url.endswith("/search"):
+        message = "Old Nominatim URL setting still in use!"
+        print(f"[OSM] ERROR: {message}")
+        if valves.status_indicators and event_emitter is not None:
+            await event_emitter({
+                "type": "status",
+                "data": {
+                    "status": "error",
+                    "description": f"Error searching OpenStreetMap: {message}",
+                    "done": True,
+                },
+            })
+        return OLD_VALVE_SETTING.replace("{OLD}", valves.nominatim_url)
+
+    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
+    searcher = OsmSearcher(valves, user_valves, event_emitter)
+    return await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
 
 class OsmNavigator:
     def __init__(
@@ -1390,7 +1455,6 @@ class Tools:
                 )
 
                 resp = f"{specific_place_instructions()}\n\n{results_in_md}"
-                print(resp)
                 return resp
             else:
                 return NO_RESULTS
@@ -1517,7 +1581,7 @@ class Tools:
 
     async def find_tourist_attractions_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
         """
-        Finds museums, sculptures, landmarks, and other tourist attractions on OpenStreetMap near
+        Finds museums, landmarks, and other tourist attractions on OpenStreetMap near
         a given place or address. The location of the address or place is reverse geo-coded,
         then nearby results are fetched from OpenStreetMap.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
@@ -1525,9 +1589,11 @@ class Tools:
         """
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["tourism=museum", "tourism=aquarium", "tourism=zoo",
-                "tourism=attraction", "tourism=gallery", "tourism=viewpoint"]
+                "tourism=attraction", "tourism=gallery", "tourism=artwork"]
+
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="tourist attractions",
                                    limit=10, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
+
 
 
     async def find_place_of_worship_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
@@ -1753,7 +1819,7 @@ class Tools:
         :param category: The category of place, shop, etc to look up.
         :return: A list of nearby shops.
         """
-        print(f"Generic catch handler called with {category}")
+        print(f"[OSM] Generic catch handler called with {category}")
         resp = (
             "# No Results Found\n"
             f"No results were found. There was an error. Finding {category} points of interest "
@@ -1777,5 +1843,4 @@ class Tools:
             "things not on the list. "
             "**IMPORTANT**: Tell the user to be specific in their "
             "query in their next message, so you can call the right function!")
-        print(resp)
         return resp
