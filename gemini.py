@@ -16,6 +16,7 @@ from typing import Optional
 def result_instructions(url: str, redirect: bool=False) -> str:
     content_instructions = (
         "Report the content to the user and answer their question."
+        "Use the content to fulfill what the user asks."
     )
 
     return ("# Gemini Content Fetch Result\n"
