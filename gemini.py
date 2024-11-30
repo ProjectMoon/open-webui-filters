@@ -64,7 +64,7 @@ def fetch(gemini_url: str, correct_urls: bool=False, prev_url: Optional[str]=Non
     if redirects > 5:
         return f"Too many redirects (ended at {gemini_url})"
 
-    if correct_urls:
+    if correct_urls and not prev_url:
         corrected_url = correct_url(gemini_url)
         if corrected_url != gemini_url:
             print(f"[Gemini] URL '{gemini_url}' corrected to '{corrected_url}'")
