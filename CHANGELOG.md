@@ -214,5 +214,8 @@
 
 # Gemini Tool
 
+**0.1.0:**
+ - Handle redirects.
+
 **0.0.1:**
  - Initial release with basic protocol handling.
