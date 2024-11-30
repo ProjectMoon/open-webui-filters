@@ -76,7 +76,7 @@ def fetch(gemini_url: str, correct_urls: bool=False, prev_url: Optional[str]=Non
     if redirects > 5:
         return {
             "success": False,
-            content: f"Too many redirects (ended at {gemini_url})",
+            "content": f"Too many redirects (ended at {gemini_url})",
             "redirected": prev_url is not None
         }
 
@@ -107,7 +107,7 @@ def fetch(gemini_url: str, correct_urls: bool=False, prev_url: Optional[str]=Non
             print(f"[Gemini] Unhandled {response.status} code for '{gemini_url}'")
             message = (f"Tell the user there was a {response.status} status code. "
                        f"Support for handling {response.status} is not implemented yet.")
-            return { "success": False, content: message, "redirected": prev_url is not None }
+            return { "success": False, "content": message, "redirected": prev_url is not None }
     except Exception as e:
         print(f"[Gemini] error: {e}")
         message = f"Tell the user there was an error fetching the page: {e}"
@@ -136,7 +136,7 @@ class Tools:
         :return: The fetched data as Markdown.
         """
         resp = fetch(gemini_url, correct_urls=self.valves.attempt_url_correction)
-        if resp["success"] == True:
+        if resp["success"]:
             result_instructions = instructions(gemini_url, redirect=resp["redirected"])
             stuff = f"{result_instructions}\n\n```\n{resp['content']}\n```"
             print(stuff)
