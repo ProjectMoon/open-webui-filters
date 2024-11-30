@@ -214,6 +214,10 @@
 
 # Gemini Tool
 
+**0.1.1:**
+ - Do not correct URLs when following redirects.
+ - Improve result handling.
+
 **0.1.0:**
  - Handle redirects.
 
