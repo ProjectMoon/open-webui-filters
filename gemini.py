@@ -140,8 +140,6 @@ class Tools:
         resp = fetch(gemini_url, correct_urls=self.valves.attempt_url_correction)
         if resp["success"]:
             result_instructions = instructions(gemini_url, redirect=resp["redirected"])
-            stuff = f"{result_instructions}\n\n```\n{resp['content']}\n```"
-            print(stuff)
-            return stuff
+            return f"{result_instructions}\n\n```\n{resp['content']}\n```"
         else:
             return resp["content"]
