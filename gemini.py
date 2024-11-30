@@ -2,14 +2,16 @@
 title: Gemini Protocol Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.0.1
+version: 0.1.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: ignition-gemini
 """
 import re
 import ignition
+from ignition import RedirectResponse, SuccessResponse
 from pydantic import BaseModel, Field
+from typing import Optional
 
 def instructions() -> str:
     return ("Render all Gemini links as Markdown links. Examples:\n\n"
@@ -58,6 +60,39 @@ def correct_url(url: str) -> str:
     return url
 
 
+def fetch(gemini_url: str, correct_urls: bool=False, prev_url: Optional[str]=None, redirects: int=0) -> str:
+    if redirects > 5:
+        return f"Too many redirects (ended at {gemini_url})"
+
+    if correct_urls:
+        corrected_url = correct_url(gemini_url)
+        if corrected_url != gemini_url:
+            print(f"[Gemini] URL '{gemini_url}' corrected to '{corrected_url}'")
+            gemini_url = corrected_url
+
+    if not prev_url:
+        print(f"[Gemini] Fetching: {gemini_url}")
+    else:
+        print(f"[Gemini] Fetching: {gemini_url} (redirected from {prev_url})")
+
+    try:
+
+        response = ignition.request(gemini_url, raise_errors=True, referer=prev_url)
+
+        if isinstance(response, SuccessResponse):
+            content = response.data()
+            return f"{instructions()}\n\n ```\n{content.strip()}\n```"
+        elif isinstance(response, RedirectResponse):
+            redirect_url = response.data()
+            return fetch(redirect_url, correct_urls, gemini_url, redirects + 1)
+        else:
+            print(f"[Gemini] Unhandled {response.status} code for '{gemini_url}'")
+            return (f"Tell the user there was a {response.status} status code. "
+                    f"Support for handling {response.status} is not implemented yet.")
+    except Exception as e:
+        print(f"[Gemini] error: {e}")
+        return f"Tell the user there was an error fetching the page: {e}"
+
 class Tools:
     class Valves(BaseModel):
         attempt_url_correction: str = Field(
@@ -76,23 +111,4 @@ class Tools:
         :param gemini_url: The URL to fetch. The URL MUST begin with gemini://.
         :return: The fetched data as Markdown.
         """
-        try:
-            print(f"[Gemini] Fetching: {gemini_url}")
-            if self.valves.attempt_url_correction:
-                corrected_url = correct_url(gemini_url)
-                if corrected_url != gemini_url:
-                    print(f"[Gemini] URL '{gemini_url}' corrected to '{corrected_url}'")
-                    gemini_url = corrected_url
-
-            response = ignition.request(gemini_url, raise_errors=True)
-
-            if str(response.status).startswith("2"):
-                content = response.data()
-                return f"{instructions()}\n\n ```\n{content.strip()}\n```"
-            else:
-                print(f"[Gemini] Unhandled {response.status} code for '{gemini_url}'")
-                return (f"Tell the user there was a {response.status} status code. "
-                        f"Support for handling {response.status} is not implemented yet.")
-        except Exception as e:
-            print(f"[Gemini] error: {e}")
-            return f"Tell the user there was an error fetching the page: {e}"
+        return fetch(gemini_url, correct_urls=self.valves.attempt_url_correction)
