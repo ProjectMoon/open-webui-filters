@@ -1,4 +1,14 @@
 # OpenStreetMap Tool
+**2.1.0**
+ - New feature: navigation. LLMs can provide navigation directions and
+   answer questions about distance between two places. Works best with
+   Qwen and Mistral. Llama3 seems to require a very specific request
+   to use the navigation tool.
+ - New POI category: tourist attractions. Uses new a new ranking
+   system to try and surface more prominent attractions.
+ - Fall back to Haversine distance if OpenRouteService cannot
+   calculate a navigation distance.
+ - Cache ORS route information.
 
 **1.3.1:**
  - Handle bad or unclear addresses by having the model tell you.
@@ -201,3 +211,8 @@
 
 **0.1.0:**
  - Initial release.
+
+# Gemini Tool
+
+**0.0.1:**
+ - Initial release with basic protocol handling.
