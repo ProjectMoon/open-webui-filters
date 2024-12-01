@@ -214,6 +214,9 @@
 
 # Gemini Tool
 
+**0.1.2:**
+ - Check MIME type of response (and only handle it if it's gemtext).
+
 **0.1.1:**
  - Do not correct URLs when following redirects.
  - Improve result handling.
