@@ -126,6 +126,8 @@ def handle_content(resp: SuccessResponse) -> str:
     except ValueError:
         mime_type = resp.meta
 
+    mime_type = mime_type.strip()
+
     if mime_type == "text/gemini":
         return resp.data().strip()
     else:
