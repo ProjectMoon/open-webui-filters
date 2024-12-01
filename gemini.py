@@ -2,7 +2,7 @@
 title: Gemini Protocol Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.1.1
+version: 0.1.2
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: ignition-gemini
@@ -19,6 +19,7 @@ def result_instructions(url: str, redirect: bool=False) -> str:
         "Do not make assumptions. This is the content you need. "
         "Even if you think it's not the right content, report the "
         "content anyway. Do not say you think it's the wrong content."
+        "You MUST use this content."
     )
 
     return ("# Gemini Content Fetch Result\n"
@@ -27,7 +28,7 @@ def result_instructions(url: str, redirect: bool=False) -> str:
 
 def instructions(url: str, redirect: bool=False) -> str:
     return result_instructions(url, redirect) + (
-        "Here are the instructions you must follow. "
+        "Here are more instructions you must follow. "
         "Render all Gemini links as Markdown links. Examples:\n\n"
         " - [gemini://example.com](gemini://example.com)\n"
         " - [a gemini capsule](gemini://example.com)\n"
@@ -99,7 +100,7 @@ def fetch(gemini_url: str, correct_urls: bool=False, prev_url: Optional[str]=Non
         if isinstance(response, SuccessResponse):
             return {
                 "success": True,
-                "content": response.data().strip(),
+                "content": handle_content(response),
                 "redirected": prev_url is not None
             }
         elif isinstance(response, RedirectResponse):
@@ -118,6 +119,17 @@ def fetch(gemini_url: str, correct_urls: bool=False, prev_url: Optional[str]=Non
             "content": message,
             "redirected": prev_url is not None
         }
+
+def handle_content(resp: SuccessResponse) -> str:
+    try:
+        mime_type, encoding = resp.meta.split(";")
+    except ValueError:
+        mime_type = resp.meta
+
+    if mime_type == "text/gemini":
+        return resp.data().strip()
+    else:
+        raise ValueError(f"Not yet able to handle MIME type {mime_type}")
 
 class Tools:
     class Valves(BaseModel):
