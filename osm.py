@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 2.1.0
+version: 2.2.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -1328,8 +1328,28 @@ class OsmNavigator:
             travel_time = round(route.get('summary', {}).get('duration', 0) / 60.0, 2)
             travel_type = "car" if total_distance > 1.5 else "walking/biking"
 
+            def create_step_instruction(step):
+                instruction = step['instruction']
+                duration = round(step.get('duration', 0.0) / 60.0, 2)
+                distance = round(step.get('distance', 0.0), 2)
+
+                if duration <= 0.0 or distance <= 0.0:
+                    return f"- {instruction}"
+
+                if duration < 1.0:
+                    duration = f"{round(duration * 60.0, 2)} sec"
+                else:
+                    duration = f"{duration} min"
+
+                if distance < 1.0:
+                    distance = f"{round(distance * 1000.0, 2)}m"
+                else:
+                    distance = f"{distance}km"
+
+                return f"- {instruction} ({distance}, {duration})"
+
             instructions = "\n".join([
-                f"- {step['instruction']}"
+                create_step_instruction(step)
                 for segment in route["segments"]
                 for step in segment["steps"]]
             )

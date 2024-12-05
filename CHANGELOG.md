@@ -1,5 +1,9 @@
 # OpenStreetMap Tool
-**2.1.0**
+**2.2.0:**
+ - Report distances and travel time for each step in a navigation
+   route.
+
+**2.1.0:**
  - New feature: navigation. LLMs can provide navigation directions and
    answer questions about distance between two places. Works best with
    Qwen and Mistral. Llama3 seems to require a very specific request
