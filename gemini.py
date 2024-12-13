@@ -2,7 +2,7 @@
 title: Gemini Protocol Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.0
+version: 0.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: ignition-gemini
@@ -65,10 +65,11 @@ def instructions(url: str, redirect: bool=False) -> str:
 
 
 class GeminiFetcher:
-    def __init__(self, gemini_url: str, correct_urls: bool=False, event_emitter=None):
+    def __init__(self, gemini_url: str, correct_urls: bool=False, web_proxy: str="", event_emitter=None):
         self.original_url = gemini_url
         self.current_url = None
         self.correct_urls = correct_urls
+        self.web_proxy = web_proxy
         self.event_emitter = event_emitter
 
     async def fetch_event(self, done: bool):
@@ -105,13 +106,15 @@ class GeminiFetcher:
             return
 
         document = content
+        link = (self.web_proxy.replace("<URL>", self.original_url)
+                if self.web_proxy != "" else self.original_url)
 
         await self.event_emitter({
             "type": "source",
             "data": {
                 "document": [document],
                 "metadata": [{"source": title, "html": False }],
-                "source": {"name": title, "url": self.original_url},
+                "source": {"name": title, "url": link},
             }
         })
 
@@ -221,8 +224,11 @@ class GeminiFetcher:
 
 class Tools:
     class Valves(BaseModel):
-        attempt_url_correction: str = Field(
+        attempt_url_correction: bool = Field(
             default=True, description="Attempt to correct malformed URLs (default enabled)."
+        )
+        gemini_web_proxy: str = Field(
+            default="", description="Web proxy to use for clickable citation links."
         )
         pass
 
@@ -240,6 +246,7 @@ class Tools:
         fetcher = GeminiFetcher(
             gemini_url=gemini_url,
             correct_urls=self.valves.attempt_url_correction,
+            web_proxy=self.valves.gemini_web_proxy,
             event_emitter=__event_emitter__
         )
 

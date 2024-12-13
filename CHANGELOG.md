@@ -218,6 +218,10 @@
 
 # Gemini Tool
 
+**0.2.1:**
+ - Basic support for making citations clickable.
+ - Fix URL correction valve setting to be a toggle, not textbox.
+
 **0.2.0:**
  - Emit events and citations.
 
