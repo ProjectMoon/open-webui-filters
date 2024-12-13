@@ -218,6 +218,9 @@
 
 # Gemini Tool
 
+**0.2.0:**
+ - Emit events and citations.
+
 **0.1.2:**
  - Check MIME type of response (and only handle it if it's gemtext).
 
