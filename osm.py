@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 2.2.0
+version: 2.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -857,14 +857,14 @@ class OsmSearcher:
             if nav_distance:
                 used_ors = True
                 cache.set(cache_key, nav_distance)
-                thing['nav_distance'] = nav_distance
+                thing['nav_distance'] = round(nav_distance, 3)
 
         return used_ors
 
     def calculate_haversine(self, origin, things_nearby):
         for thing in things_nearby:
             if 'distance' not in thing:
-                thing['distance'] = haversine_distance(origin, thing)
+                thing['distance'] = round(haversine_distance(origin, thing), 3)
 
     def use_detailed_interpretation_mode(self) -> bool:
         # Let user valve for instruction mode override the global

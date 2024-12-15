@@ -1,4 +1,7 @@
 # OpenStreetMap Tool
+**2.2.1:**
+ - Round distances to 3 decimal places.
+
 **2.2.0:**
  - Report distances and travel time for each step in a navigation
    route.
