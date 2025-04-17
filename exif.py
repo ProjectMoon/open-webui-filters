@@ -18,7 +18,7 @@ import json
 from base64 import b64decode
 import tempfile
 
-from open_webui.utils.misc import get_last_user_message_item, get_last_user_message, add_or_update_user_message
+from open_webui.utils.misc import get_last_user_message_item, get_last_user_message, add_or_update_system_message
 
 def get_or_none(tags: dict, *keys: str) -> Optional[str]:
     """
@@ -204,33 +204,57 @@ def extract_gps(img_bytes):
         else:
             return None
 
-def exif_instructions(geocoding):
+def exif_instructions(geocoding, user_image_count):
     if geocoding:
-        return valid_instructions(geocoding)
+        return valid_instructions(geocoding, user_image_count)
     else:
-        return invalid_instructions()
+        return invalid_instructions(user_image_count)
 
-def valid_instructions(geocoding):
+def valid_instructions(geocoding, user_image_count):
     lat = geocoding.get("lat", "unknown")
     lon = geocoding.get("lon", "unknown")
     place_name = geocoding.get("place", None)
 
     if place_name:
-        place_inst = f"The location, with an accuracy of 5 to 10 meters, is: {place_name}"
+        place_inst = f"The location (accurate to radius of 5 to 10 meters) is: {place_name}"
     else:
-        place_inst = "The name of the location could not be determined."
+        place_inst = "The name of the location could not be determined"
 
-    return (f"\n\n(MESSAGE FROM SYSTEM: A tool has attempted to "
-            f"extract location data about the "
-            f"most recent image in this chat. "
-            f"The image's GPS coordinates are: {lat},{lon}. "
-            f"{place_inst}. Do not mention this systme message.)")
+    count_inst = (f"There are {user_image_count} images from the user in this chat. "
+                  f"The most recent image is image number {user_image_count}.")
+
+    if place_name:
+        osm_link = f"https://www.openstreetmap.org/#map=16/{lat}/{lon}"
+        osm_inst = f"The location can be viewed on OpenStreetMap: {osm_link}"
+    else:
+        osm_inst = ""
+
+    return (f"\n\nYou have access to GPS location information about the "
+            f"most recent image in this chat. The image's GPS coordinates "
+            f"are: {lat},{lon}. {place_inst}. {osm_inst}"
+            f"\n\nThis applies to ONLY the most recent image in the chat. {count_inst}")
 
 def invalid_instructions():
-    return ("\n\n(MESSAGE FROM SYSTEM: The most recent image in this conversation "
-            "has no EXIF data. Inform user of this, and then "
-            "answer the rest of my query. Do not mention this system message.)"
-    )
+    return ("\n\nThe most recent image in this chat does not have any EXIF location "
+            "data. If the user asks about the location of the most recent image, "
+            "pleasantly and helpfully inform them that the image does not have "
+            "EXIF location data, and thus you cannot determine its location. "
+            "Make sure to otherwise answer the user's query.")
+
+def count_user_images(messages):
+    count = 0
+    for message in reversed(messages):
+        if message["role"] == "user":
+            message_content = message.get("content")
+            if message_content is not None and isinstance(message_content, list):
+                has_images = any(
+                    item.get("type") == "image_url" for item in message_content
+                )
+
+                if has_images:
+                    count += 1
+
+    return count
 
 def get_most_recent_user_message_with_image(messages):
     for message in reversed(messages):
@@ -299,18 +323,13 @@ class Filter:
                 {}
             )
 
-            first_text = next(
-                (item for item in user_message_content if item.get("type") == "text"),
-                {}
-            )
-
-            message_text = first_text.get('text', None)
             data_url = first_image.get('image_url', {}).get('url', None)
 
-            if message_text and data_url and data_url.startswith("data:"):
+            if data_url and data_url.startswith("data:"):
                 geocoding = await self.process_image(data_url)
-                instructions = exif_instructions(geocoding)
-                add_or_update_user_message(instructions, messages)
+                user_image_count = count_user_images(messages)
+                instructions = exif_instructions(geocoding, user_image_count)
+                add_or_update_system_message(instructions, messages)
                 body["messages"] = messages
 
         return body
