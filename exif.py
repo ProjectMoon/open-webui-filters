@@ -131,10 +131,10 @@ class OsmSearcher:
         data = cache.get(cache_key)
 
         if data:
-            print(f"[OSM] Got nominatim search data for {query} from cache!")
+            print(f"[EXIF-OSM] Got nominatim search data for {query} from cache!")
             return data[:limit]
 
-        print(f"[OSM] Searching Nominatim for: {query}")
+        print(f"[EXIF-OSM] Searching Nominatim for: {query}")
 
         url = urljoin(self.valves.nominatim_url, "search")
         params = {
@@ -184,7 +184,7 @@ class OsmSearcher:
             place_name = ",".join(nominatim_result['display_name'].split(",")[:3])
 
         if place_name is None:
-            print(f"WARN: Could not find display name for coords: {lat},{lon}")
+            print(f"[EXIF-OSM] WARNING: Could not find display name for coords: {lat},{lon}")
             place_name = f"{lat},{lon}"
 
         return place_name
@@ -194,21 +194,24 @@ def extract_gps(img_bytes):
         fp.write(img_bytes)
         fp.close()
 
-        data = gpsphoto.getGPSData(fp.name)
-        lat = data.get('Latitude', None)
-        lon = data.get('Longitude', None)
+        try:
+            data = gpsphoto.getGPSData(fp.name)
+            lat = data.get('Latitude', None)
+            lon = data.get('Longitude', None)
+            os.unlink(fp.name)
 
-        os.unlink(fp.name)
-        if lat and lon:
-            return (round(lat, 4), round(lon, 4))
-        else:
-            return None
+            if lat and lon:
+                return (round(lat, 4), round(lon, 4))
+            else:
+                return None
+        except Exception as e:
+            print(f"[EXIF-OSM] WARNING: Could not load image for GPS processing: {e}")
 
 def exif_instructions(geocoding, user_image_count):
     if geocoding:
         return valid_instructions(geocoding, user_image_count)
     else:
-        return invalid_instructions(user_image_count)
+        return invalid_instructions()
 
 def valid_instructions(geocoding, user_image_count):
     lat = geocoding.get("lat", "unknown")
@@ -308,12 +311,10 @@ class Filter:
     ) -> dict:
         messages = body.get("messages")
         if messages is None:
-            # Handle the case where messages is None
             return body
 
         user_message = get_most_recent_user_message_with_image(messages)
         if user_message is None:
-            # Handle the case where user_message is None
             return body
 
         user_message_content = user_message.get("content")
