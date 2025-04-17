@@ -1,5 +1,5 @@
 """
-title: EXIF Tool
+title: EXIF Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
 version: 0.1.0
