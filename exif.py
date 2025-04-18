@@ -209,17 +209,20 @@ def convert_to_decimal(tags, gps_tag, gps_ref_tag):
     return -degrees if (ref == 'W' and gps_tag == 'GPSLongitude') or \
                      (ref == 'S' and gps_tag == 'GPSLatitude') else degrees
 
-def extract_gps(img_bytes):
+def extract_exif_info(img_bytes):
     try:
         f = BytesIO(img_bytes)
         tags = process_file(f, strict=False)
+        date_taken = tags.get('EXIF DateTimeOriginal', None)
         lat = convert_to_decimal(tags, 'GPS GPSLatitude', 'GPS GPSLatitudeRef')
         lon = convert_to_decimal(tags, 'GPS GPSLongitude', 'GPS GPSLongitudeRef')
 
         if lon is not None and lat is not None:
-            return (round(lat, 4), round(lon, 4))
+            coords = (round(lat, 4), round(lon, 4))
         else:
-            return None
+            coords = None
+
+        return { "date_taken": date_taken, "gps_coords": coords }
     except Exception as e:
         print(f"[EXIF-OSM] WARNING: Could not load image for GPS processing: {e}")
         return None
@@ -234,11 +237,17 @@ def valid_instructions(geocoding, user_image_count):
     lat = geocoding.get("lat", "unknown")
     lon = geocoding.get("lon", "unknown")
     place_name = geocoding.get("place", None)
+    date_taken = geocoding.get("date_taken", None)
+
+    if date_taken:
+        date_inst = f"This photo was taken on {date_taken}."
+    else:
+        date_inst = ""
 
     if place_name:
-        place_inst = f"The location (accurate to radius of 5 to 10 meters) is: {place_name}"
+        place_inst = f"The location (accurate to radius of 5 to 10 meters) is: {place_name}."
     else:
-        place_inst = "The name of the location could not be determined"
+        place_inst = "The name of the location could not be determined."
 
     count_inst = (f"There are {user_image_count} images from the user in this chat. "
                   f"The most recent image is image number {user_image_count}.")
@@ -251,7 +260,7 @@ def valid_instructions(geocoding, user_image_count):
 
     return (f"\n\nYou have access to GPS location information about the "
             f"most recent image in this chat. The image's GPS coordinates "
-            f"are: {lat},{lon}. {place_inst}. {osm_inst}"
+            f"are: {lat},{lon}. {place_inst} {date_inst} {osm_inst}"
             f"\n\nThis applies to ONLY the most recent image in the chat. {count_inst}")
 
 def invalid_instructions():
@@ -311,11 +320,18 @@ class Filter:
     async def process_image(self, image_data_url):
         base64_img = image_data_url.split(',', maxsplit=1)[1]
         img_bytes = b64decode(base64_img)
-        coords = extract_gps(img_bytes)
-        if coords:
+        exif = extract_exif_info(img_bytes)
+
+        if exif:
+            coords = exif["gps_coords"]
             searcher = OsmSearcher(self.valves)
             geocoded_name = await searcher.reverse_geocode(coords[0], coords[1])
-            return { "lat": coords[0], "lon": coords[1], "place": geocoded_name }
+            return {
+                "date_taken": exif["date_taken"],
+                "place": geocoded_name,
+                "lat": coords[0],
+                "lon": coords[1]
+            }
         else:
             return None
 

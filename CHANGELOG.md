@@ -2,6 +2,7 @@
 
 **0.2.0:**
  - Drop requirement on GPSPhoto. Use only exifread.
+ - Extract time of image creation from EXIF.
 
 **0.1.0:**
  - Initial release.
