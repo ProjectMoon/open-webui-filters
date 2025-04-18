@@ -2,23 +2,29 @@
 title: EXIF Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.1.0
+version: 0.2.0
 license: AGPL-3.0+
 required_open_webui_version: 0.6.5
-requirements: pillow, piexif, exifread, gpsphoto
+requirements: exifread
 """
 
-import requests
-from urllib.parse import urljoin
-import os
-from GPSPhoto import gpsphoto
-from pydantic import BaseModel, Field
-from typing import Callable, Awaitable, Any, Optional, Literal
 import json
-from base64 import b64decode
+import os
 import tempfile
+from base64 import b64decode
+from io import BytesIO
+from typing import Any, Awaitable, Callable, Literal, Optional
+from urllib.parse import urljoin
 
-from open_webui.utils.misc import get_last_user_message_item, get_last_user_message, add_or_update_system_message
+import requests
+from exifread import process_file
+from open_webui.utils.misc import (
+    add_or_update_system_message,
+    get_last_user_message,
+    get_last_user_message_item,
+)
+from pydantic import BaseModel, Field
+
 
 def get_or_none(tags: dict, *keys: str) -> Optional[str]:
     """
@@ -62,7 +68,6 @@ def parse_nominatim_address(address) -> Optional[str]:
     line3 = ", ".join(line3).strip()
     full_address = filter(None, [line1, line2, line3])
     full_address = ", ".join(full_address).strip()
-    print(full_address)
     return full_address if len(full_address) > 0 else None
 
 class OsmCache:
@@ -189,23 +194,35 @@ class OsmSearcher:
 
         return place_name
 
+def convert_to_decimal(tags, gps_tag, gps_ref_tag):
+    if gps_tag not in tags or gps_ref_tag not in tags:
+        return None
+
+    values = tags[gps_tag].values
+    ref = tags[gps_ref_tag].values[0]
+
+    degrees = sum(
+        values[i].numerator / values[i].denominator * (1/(60**i))
+        for i in range(3)
+    )
+
+    return -degrees if (ref == 'W' and gps_tag == 'GPSLongitude') or \
+                     (ref == 'S' and gps_tag == 'GPSLatitude') else degrees
+
 def extract_gps(img_bytes):
-    with tempfile.NamedTemporaryFile(delete=False) as fp:
-        fp.write(img_bytes)
-        fp.close()
+    try:
+        f = BytesIO(img_bytes)
+        tags = process_file(f, strict=False)
+        lat = convert_to_decimal(tags, 'GPS GPSLatitude', 'GPS GPSLatitudeRef')
+        lon = convert_to_decimal(tags, 'GPS GPSLongitude', 'GPS GPSLongitudeRef')
 
-        try:
-            data = gpsphoto.getGPSData(fp.name)
-            lat = data.get('Latitude', None)
-            lon = data.get('Longitude', None)
-            os.unlink(fp.name)
-
-            if lat and lon:
-                return (round(lat, 4), round(lon, 4))
-            else:
-                return None
-        except Exception as e:
-            print(f"[EXIF-OSM] WARNING: Could not load image for GPS processing: {e}")
+        if lon is not None and lat is not None:
+            return (round(lat, 4), round(lon, 4))
+        else:
+            return None
+    except Exception as e:
+        print(f"[EXIF-OSM] WARNING: Could not load image for GPS processing: {e}")
+        return None
 
 def exif_instructions(geocoding, user_image_count):
     if geocoding:
@@ -292,7 +309,7 @@ class Filter:
         self.valves = self.Valves()
 
     async def process_image(self, image_data_url):
-        base64_img = image_data_url.split(',')[1]
+        base64_img = image_data_url.split(',', maxsplit=1)[1]
         img_bytes = b64decode(base64_img)
         coords = extract_gps(img_bytes)
         if coords:

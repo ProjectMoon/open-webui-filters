@@ -1,3 +1,11 @@
+# EXIF Filter
+
+**0.2.0:**
+ - Drop requirement on GPSPhoto. Use only exifread.
+
+**0.1.0:**
+ - Initial release.
+
 # OpenStreetMap Tool
 **2.2.1:**
  - Round distances to 3 decimal places.
