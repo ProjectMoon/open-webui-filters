@@ -8,6 +8,10 @@
  - Initial release.
 
 # OpenStreetMap Tool
+**2.2.2:**
+ - Inform model of distance sorting method used to attempt to improve
+   reasoning model performance.
+
 **2.2.1:**
  - Round distances to 3 decimal places.
 

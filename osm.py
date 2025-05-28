@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 2.2.1
+version: 2.2.2
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -1128,8 +1128,12 @@ class OsmSearcher:
         things_nearby = sort_by_closeness(origin, things_nearby, 'distance')
 
         if self.attempt_ors(origin, things_nearby):
+            sort_method = "travel distance"
             things_nearby = sort_by_closeness(origin, things_nearby, 'nav_distance', 'distance')
-        return things_nearby
+        else:
+            sort_method = "haversine distance"
+
+        return [things_nearby, sort_method]
 
     async def search_nearby(
             self, place: str, tags: List[str], limit: int=5, radius: int=4000,
@@ -1174,7 +1178,7 @@ class OsmSearcher:
             }
 
             print(f"[OSM] Searching for {category} near {place_display_name}")
-            things_nearby = await self.get_things_nearby(nominatim_result, place, tags,
+            things_nearby, sort_method = await self.get_things_nearby(nominatim_result, place, tags,
                                                          bbox, limit, radius)
 
             if not things_nearby or len(things_nearby) == 0:
@@ -1187,7 +1191,7 @@ class OsmSearcher:
 
             # Only print the full result instructions if we
             # actually have something.
-            search_results = convert_and_validate_results(place, things_nearby)
+            search_results = convert_and_validate_results(place, things_nearby, sort_message=sort_method)
             if search_results:
                 result_instructions = self.get_result_instructions(tag_type_str)
             else:
