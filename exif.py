@@ -2,7 +2,7 @@
 title: EXIF Filter
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 0.2.0
+version: 0.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.6.5
 requirements: exifread
@@ -212,7 +212,11 @@ def convert_to_decimal(tags, gps_tag, gps_ref_tag):
 def extract_exif_info(img_bytes):
     try:
         f = BytesIO(img_bytes)
-        tags = process_file(f, strict=False)
+        try:
+            tags = process_file(f, strict=False)
+        except:
+            tags = {}
+
         date_taken = tags.get('EXIF DateTimeOriginal', None)
         lat = convert_to_decimal(tags, 'GPS GPSLatitude', 'GPS GPSLatitudeRef')
         lon = convert_to_decimal(tags, 'GPS GPSLongitude', 'GPS GPSLongitudeRef')
@@ -322,18 +326,29 @@ class Filter:
         img_bytes = b64decode(base64_img)
         exif = extract_exif_info(img_bytes)
 
+        # If we have _SOMETHING_, return what we can. Preferably fully
+        # reverse geocoded and date taken. If we only have date taken,
+        # use that. Otherwise, return nothing.
         if exif:
             coords = exif["gps_coords"]
-            searcher = OsmSearcher(self.valves)
-            geocoded_name = await searcher.reverse_geocode(coords[0], coords[1])
-            return {
-                "date_taken": exif["date_taken"],
-                "place": geocoded_name,
-                "lat": coords[0],
-                "lon": coords[1]
-            }
-        else:
-            return None
+            date_taken = exif["date_taken"]
+
+            if coords:
+                searcher = OsmSearcher(self.valves)
+                geocoded_name = await searcher.reverse_geocode(coords[0], coords[1])
+                return {
+                    "date_taken": exif["date_taken"],
+                    "place": geocoded_name,
+                    "lat": coords[0],
+                    "lon": coords[1]
+                }
+
+            if date_taken:
+                return {
+                    "date_taken": exif["date_taken"]
+                }
+
+        return None
 
     async def inlet(
         self,
