@@ -1617,8 +1617,19 @@ class Tools:
                 "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
             }
 
+        radius = 4000
+        limit = 5
+        if category == "swimming":
+            radius = 10000
+        elif category == "amusement":
+            radius = 10000
+            limit = 10
+        elif category == "playgrounds":
+            limit = 10
+
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   radius=radius, limit=limit, setting=setting, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
 
     async def find_bakeries_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
