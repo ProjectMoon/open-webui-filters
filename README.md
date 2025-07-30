@@ -142,7 +142,7 @@ the LLM's reply.
 
 ## OpenStreetMap Tool
 
-_Recommended models: Llama 3.1+, Mistral Nemo, Mistral Small, Qwen 2.5._
+_Recommended models: Qwen 3, Mistral Small_
 
 A tool that can find certain points of interest (POIs) nearby a
 requested address or place.
