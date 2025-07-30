@@ -8,8 +8,19 @@
  - Initial release.
 
 # OpenStreetMap Tool
-**2.3.0:**
+**3.0.0:**
+ - New feature: adjust search radius based on location being urban,
+   suburban, or rural. Rural has a much larger search radius than
+   urban.
+   - Relies on the LLM's understanding of how to categorize the place.
+   - You can also ask it to specifically search for urban, suburban,
+     rural search radius.
+ - New POI category: gas stations.
+ - New POI category: EV fast chargers. The LLM can look for any type
+   of charger, or specific types.
  - Return replies from functions as JSON instead of raw Markdown.
+ - Change various labels (e.g. nav distance -> travel distance) in
+   replies to give LLMs better understanding.
 
 **2.2.2:**
  - Inform model of distance sorting method used to attempt to improve
