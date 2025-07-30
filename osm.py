@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 2.3.0
+version: 3.0.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -2052,6 +2052,7 @@ class Tools:
             " - Electrical and lighting stores\n"
             " - Consumer electronics stores\n"
             " - Healthcare (doctors, hospitals, pharmacies, and health stores)\n"
+            " - Fuel & EV charging (gas stations, DC fast chargers)\n"
             " - Various recreational and leisure activities\n\n"
             "Only mention things from the above list that you think the user "
             "will be interested in, given the conversation so far. Don't mention "
