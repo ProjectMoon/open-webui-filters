@@ -1427,8 +1427,9 @@ def recreation_to_tags(recreation_type: str) -> List[str]:
     elif recreation_type == "playgrounds":
         return ["leisure=playground"]
     elif recreation_type == "amusement":
-        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course",
-                "leisure=park", "leisure=amusement_arcade", "tourism=theme_park"]
+        return ["leisure=park", "leisure=amusement_arcade", "tourism=theme_park"]
+    elif recreation_type == "sports":
+        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course"]
     else:
         return []
 
@@ -1599,12 +1600,12 @@ class Tools:
         """
         Finds recreation facilities of a specific type on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        Note: amusement category can be arcades, theme parks, horseback riding, ice skating, and similar.
+        Note: amusement category can be arcades, theme parks, and similar.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of recreation to search for. Must be one of "swimming", "playgrounds", or "amusement".
+        :param category: Category of recreation to search for. Must be one of "swimming", "playgrounds", "amusement", or "sports".
         """
-        allowed_categories = ["swimming", "playgrounds", "amusement"]
+        allowed_categories = ["swimming", "playgrounds", "amusement", "sports"]
 
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
@@ -1619,9 +1620,10 @@ class Tools:
 
         radius = 4000
         limit = 5
+
         if category == "swimming":
             radius = 10000
-        elif category == "amusement":
+        elif category == "amusement" or category == "sports":
             radius = 10000
             limit = 10
         elif category == "playgrounds":
