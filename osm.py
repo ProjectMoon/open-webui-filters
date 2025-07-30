@@ -155,8 +155,8 @@ def detailed_instructions(tag_type_str: str) -> str:
         "When telling the user about them, make sure to report "
         "all the information (address, contact info, website, etc).\n\n"
         "Use this information to answer the user's query. Prefer closer results "
-        "first. Closer results are higher in the list. When telling the "
-        "user the distance, use the TRAVEL DISTANCE. Do not say one "
+        "by TRAVEL DISTANCE first. Closer results are higher in the list. "
+        "When telling the user the distance, use the TRAVEL DISTANCE. Do not say one "
         "distance is farther away than another. Just say what the "
         "distances are. "
         f"{OSM_LINK_INSTRUCTIONS}"
@@ -1526,9 +1526,8 @@ class Tools:
     ) -> str:
         """
         Finds supermarkets and grocery stores on OpenStreetMap near a
-        given place or address. The location of the address or place is
-        reverse geo-coded, then nearby results are fetched from OpenStreetMap.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        given place or address. For setting, specify if the place is an
+        urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby grocery stores or supermarkets, if found.
@@ -1544,9 +1543,7 @@ class Tools:
     ) -> str:
         """
         Find convenience stores on OpenStreetMap near a given place or address.
-        The location of the address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap. For setting, specify if the place is
-        an urban area, a suburb, or a rural location.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby convenience stores, if found.
@@ -1560,9 +1557,7 @@ class Tools:
 
     async def find_bakeries_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
-        Finds bakeries on OpenStreetMap near a given place or
-        address. The location of the address or place is reverse
-        geo-coded, then nearby results are fetched from OpenStreetMap.
+        Finds bakeries on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
@@ -1577,10 +1572,8 @@ class Tools:
     async def find_food_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds restaurants, fast food, bars, breweries, pubs, etc on
-        OpenStreetMap near a given place or address. The location of the
-        address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap. For setting, specify if the place
-        is an urban area, a suburb, or a rural location.
+        OpenStreetMap near a given place or address. For setting,
+        specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby restaurants, eateries, etc, if found.
@@ -1604,10 +1597,8 @@ class Tools:
     async def find_swimming_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds swimming pools, water parks, swimming areas, and other aquatic
-        activities on OpenStreetMap near a given place or address. The location
-        of the address or place is reverse geo-coded, then nearby results are fetched
-        from OpenStreetMap. For setting, specify if the place is an urban area,
-        a suburb, or a rural location.
+        activities on OpenStreetMap near a given place or address. For setting,
+        specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of swimming poools or places, if found.
@@ -1623,8 +1614,7 @@ class Tools:
     async def find_playgrounds_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds playgrounds and parks on OpenStreetMap near a given place, address, or coordinates.
-        The location of the address or place is reverse geo-coded, then nearby results are fetched
-        from OpenStreetMap. For setting, specify if the place is an urban area, a suburb, or a rural location.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of recreational places, if found.
@@ -1639,10 +1629,8 @@ class Tools:
     async def find_recreation_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds playgrounds, theme parks, parks, frisbee golf, ice skating, and other recreational
-        activities on OpenStreetMap near a given place or address. The location
-        of the address or place is reverse geo-coded, then nearby results are fetched
-        from OpenStreetMap. For setting, specify if the place is an urban area, a suburb,
-        or a rural location.
+        activities on OpenStreetMap near a given place or address. For setting, specify if
+        the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of recreational places, if found.
@@ -1658,9 +1646,8 @@ class Tools:
     async def find_tourist_attractions_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds museums, landmarks, and other tourist attractions on OpenStreetMap near
-        a given place or address. The location of the address or place is reverse geo-coded,
-        then nearby results are fetched from OpenStreetMap. For setting, specify if the
-        place is an urban area, a suburb, or a rural location.
+        a given place or address. For setting, specify if the place is an urban
+        area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of tourist attractions, if found.
@@ -1678,11 +1665,9 @@ class Tools:
 
     async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
-        Finds places of worship (churches, mosques, temples, etc) on
-        OpenStreetMap near a given place or address. The location of the
-        address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap. For setting, specify if the
-        place is an urban area, a suburb, or a rural location.
+        Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
+        given place or address. For setting, specify if the place is an urban area,
+        a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby places of worship, if found.
@@ -1696,11 +1681,9 @@ class Tools:
 
     async def find_accommodation_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
-        Finds accommodation (hotels, guesthouses, hostels, etc) on
-        OpenStreetMap near a given place or address. The location of the
-        address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap. For setting, specify if the
-        place is an urban area, a suburb, or a rural location.
+        Finds accommodation (hotels, guesthouses, hostels, etc) on OpenStreetMap near a
+        given place or address. For setting, specify if the place is an urban area,
+        a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby accommodation, if found.
@@ -1717,9 +1700,8 @@ class Tools:
     async def find_alcohol_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds beer stores, liquor stores, and similar shops on OpenStreetMap
-        near a given place or address. The location of the address or place is
-        reverse geo-coded, then nearby results are fetched from OpenStreetMap.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        near a given place or address. For setting, specify if the place is an
+        urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby alcohol shops, if found.
@@ -1733,9 +1715,8 @@ class Tools:
     async def find_drugs_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds cannabis dispensaries, coffeeshops, smartshops, and similar stores on OpenStreetMap
-        near a given place or address. The location of the address or place is
-        reverse geo-coded, then nearby results are fetched from OpenStreetMap.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        near a given place or address. For setting, specify if the place is an urban area,
+        a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby cannabis and smart shops, if found.
@@ -1964,6 +1945,7 @@ class Tools:
         """
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
+        charger_type = charger_type.lower().replace('"', "").replace("'", "")
 
         # possible search constraints, mapped to corresponding osm socket types.
         param_charger_types = {
@@ -1995,7 +1977,7 @@ class Tools:
         # normally, search for any of the possible chargers.
         tags = [f"socket:{charger}=\\.*" for charger in osm_socket_types]
 
-        # or constrain search
+        # or, constrain search?
         if charger_type != "all":
             if charger_type not in param_charger_types.keys():
                 return {
