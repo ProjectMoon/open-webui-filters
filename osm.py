@@ -1220,17 +1220,18 @@ class OsmSearcher:
             print(e)
             await self.event_error(e)
             instructions = (f"No results were found, because of an error. "
-                      f"Tell the user that there was an error finding results. "
-                      f"The error was: {e}")
+                            f"Tell the user that there was an error finding results.")
 
-            result = { "instructions": instructions }
+            result = { "instructions": instructions, "results": [], "error_message": f"{e}" }
             return { "place_display_name": place_display_name, "results": result, "things": [] }
 
 
 async def do_osm_search(
         valves, user_valves, place, tags,
-        category="POIs", event_emitter=None, limit=5, radius=4000
+        category="POIs", event_emitter=None, limit=5, radius=4000,
+        setting='urban', search_mode='OR'
 ):
+    radius = radius * setting_to_multiplier(setting)
     # handle breaking 1.0 change, in case of old Nominatim valve settings.
     if valves.nominatim_url.endswith("/search"):
         message = "Old Nominatim URL setting still in use!"
@@ -1250,7 +1251,7 @@ async def do_osm_search(
             "results": []
         }
 
-    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
+    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place} ({setting} setting)")
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     search = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
     return search["results"]
@@ -1369,6 +1370,26 @@ class OsmNavigator:
                 "route": None
             }
 
+def normalize_setting(setting: Optional[str]) -> str:
+    if setting:
+        setting = setting.lower().replace('"', '').replace("'", '')
+        if setting in ['urban', 'suburban', 'rural']:
+            return setting
+        else:
+            print(f"[OSM] WARN: {setting} is not a valid urban setting. Defaulting to 'urban'.")
+            return 'urban'
+
+    return 'urban'
+
+def setting_to_multiplier(setting: str) -> int:
+    if setting == 'urban':
+        return 1
+    elif setting == 'suburban':
+        return 2
+    elif setting == 'rural':
+        return 3.5
+
+    return 1
 
 class Tools:
     class Valves(BaseModel):
@@ -1501,44 +1522,70 @@ class Tools:
         return await navigator.navigate(start_address_or_place, destination_address_or_place)
 
     async def find_grocery_stores_near_place(
-            self, place: str, __user__: dict, __event_emitter__
+            self, place: str, setting: str, __user__: dict, __event_emitter__
     ) -> str:
         """
-        Finds supermarkets, grocery stores, and other food stores on
-        OpenStreetMap near a given place or address. The location of the
-        address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap.
+        Finds supermarkets and grocery stores on OpenStreetMap near a
+        given place or address. The location of the address or place is
+        reverse geo-coded, then nearby results are fetched from OpenStreetMap.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby grocery stores or supermarkets, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["shop=supermarket", "shop=grocery", "shop=convenience", "shop=greengrocer"]
+        tags = ["shop=supermarket", "shop=grocery", "shop=greengrocer"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="groceries",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+
+    async def find_convenience_stores_near_place(
+            self, place: str, setting: str, __user__: dict, __event_emitter__
+    ) -> str:
+        """
+        Find convenience stores on OpenStreetMap near a given place or address.
+        The location of the address or place is reverse geo-coded, then nearby results
+        are fetched from OpenStreetMap. For setting, specify if the place is
+        an urban area, a suburb, or a rural location.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :return: A list of nearby convenience stores, if found.
+        """
+        setting = normalize_setting(setting)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["shop=convenience"]
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="groceries",
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    async def find_bakeries_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_bakeries_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds bakeries on OpenStreetMap near a given place or
         address. The location of the address or place is reverse
         geo-coded, then nearby results are fetched from OpenStreetMap.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby bakeries, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=bakery"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bakeries",
-                             place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_food_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_food_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds restaurants, fast food, bars, breweries, pubs, etc on
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap.
+        are fetched from OpenStreetMap. For setting, specify if the place
+        is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby restaurants, eateries, etc, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = [
             "amenity=restaurant",
@@ -1551,270 +1598,417 @@ class Tools:
             "amenity=canteen"
         ]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="restaurants and food",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    async def find_swimming_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_swimming_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds swimming pools, water parks, swimming areas, and other aquatic
         activities on OpenStreetMap near a given place or address. The location
         of the address or place is reverse geo-coded, then nearby results are fetched
-        from OpenStreetMap.
+        from OpenStreetMap. For setting, specify if the place is an urban area,
+        a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of swimming poools or places, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["leisure=swimming_pool", "leisure=swimming_area",
                 "leisure=water_park", "tourism=theme_park"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="swimming",
-                                   radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, radius=10000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
-    async def find_playgrounds_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_playgrounds_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds playgrounds and parks on OpenStreetMap near a given place, address, or coordinates.
         The location of the address or place is reverse geo-coded, then nearby results are fetched
-        from OpenStreetMap.
+        from OpenStreetMap. For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of recreational places, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["leisure=playground"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="playgrounds",
-                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, limit=10, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
-    async def find_recreation_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_recreation_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds playgrounds, theme parks, parks, frisbee golf, ice skating, and other recreational
         activities on OpenStreetMap near a given place or address. The location
         of the address or place is reverse geo-coded, then nearby results are fetched
-        from OpenStreetMap.
+        from OpenStreetMap. For setting, specify if the place is an urban area, a suburb,
+        or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of recreational places, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course",
                 "leisure=park", "leisure=amusement_arcade", "tourism=theme_park"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="recreational activities",
-                                   limit=10, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, limit=10, radius=10000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
-    async def find_tourist_attractions_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_tourist_attractions_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds museums, landmarks, and other tourist attractions on OpenStreetMap near
         a given place or address. The location of the address or place is reverse geo-coded,
-        then nearby results are fetched from OpenStreetMap.
+        then nearby results are fetched from OpenStreetMap. For setting, specify if the
+        place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of tourist attractions, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["tourism=museum", "tourism=aquarium", "tourism=zoo",
                 "tourism=attraction", "tourism=gallery", "tourism=artwork"]
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="tourist attractions",
-                                   limit=10, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, limit=10, radius=10000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
 
 
-    async def find_place_of_worship_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap.
+        are fetched from OpenStreetMap. For setting, specify if the
+        place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby places of worship, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=place_of_worship"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
 
-    async def find_accommodation_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_accommodation_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds accommodation (hotels, guesthouses, hostels, etc) on
         OpenStreetMap near a given place or address. The location of the
         address or place is reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap.
+        are fetched from OpenStreetMap. For setting, specify if the
+        place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby accommodation, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = [
             "tourism=hotel", "tourism=chalet", "tourism=guest_house", "tourism=guesthouse",
             "tourism=motel", "tourism=hostel"
         ]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="accommodation",
-                                   radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_alcohol_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_alcohol_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds beer stores, liquor stores, and similar shops on OpenStreetMap
         near a given place or address. The location of the address or place is
-        reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap.
+        reverse geo-coded, then nearby results are fetched from OpenStreetMap.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby alcohol shops, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=alcohol"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="alcohol stores",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_drugs_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_drugs_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds cannabis dispensaries, coffeeshops, smartshops, and similar stores on OpenStreetMap
         near a given place or address. The location of the address or place is
-        reverse geo-coded, then nearby results
-        are fetched from OpenStreetMap.
+        reverse geo-coded, then nearby results are fetched from OpenStreetMap.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby cannabis and smart shops, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=coffeeshop", "shop=cannabis", "shop=headshop", "shop=smartshop"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="cannabis and smartshops",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_schools_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_schools_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds schools (NOT universities) on OpenStreetMap near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby schools, if found.
         """
+        setting = normalize_setting(setting)
         tags = ["amenity=school"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="schools",
-                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, limit=10, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
-    async def find_universities_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_universities_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds universities and colleges on OpenStreetMap near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby schools, if found.
         """
+        setting = normalize_setting(setting)
         tags = ["amenity=university", "amenity=college"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="universities",
-                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, limit=10, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
-    async def find_libraries_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_libraries_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds libraries on OpenStreetMap near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby libraries, if found.
         """
+        setting = normalize_setting(setting)
         tags = ["amenity=library"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="libraries",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_public_transport_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_public_transport_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds public transportation stops on OpenStreetMap near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby public transportation stops, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["highway=bus_stop", "amenity=bus_station",
                 "railway=station", "railway=halt", "railway=tram_stop",
                 "station=subway", "amenity=ferry_terminal",
                 "public_transport=station"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="public transport",
-                                   limit=10, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, limit=10, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
-    async def find_bike_rentals_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_bike_rentals_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds bike rentals on OpenStreetMap near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby bike rentals, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bike rentals",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_car_rentals_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_car_rentals_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds bike rentals on OpenStreetMap near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby bike rentals, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="car rentals",
-                                   radius=6000, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, radius=6000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
-    async def find_hardware_store_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_hardware_store_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds hardware stores, home improvement stores, and DIY stores
         near given a place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby hardware/DIY stores, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=doityourself", "shop=hardware", "shop=power_tools",
                 "shop=groundskeeping", "shop=trade"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="hardware stores",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_electrical_store_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_electrical_store_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds electrical stores and lighting stores near a given place
         or address. These are stores that sell lighting and electrical
         equipment like wires, sockets, and so forth.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby electrical/lighting stores, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=lighting", "shop=electrical"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="electrical stores",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_electronics_store_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_electronics_store_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds consumer electronics stores near a given place or address.
         These stores sell computers, cell phones, video games, and so on.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby electronics stores, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["shop=electronics"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves,
                                    category="consumer electronics stores", place=place,
-                                   tags=tags, event_emitter=__event_emitter__)
+                                   tags=tags, setting=setting, event_emitter=__event_emitter__)
 
-    async def find_doctor_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_doctor_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds doctors near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby electronics stores, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=clinic", "amenity=doctors", "healthcare=doctor"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="doctors",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_hospital_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_hospital_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds doctors near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby electronics stores, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["healthcare=hospital", "amenity=hospitals"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="hospitals",
-                                   place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_pharmacy_near_place(self, __user__: dict, place: str, __event_emitter__) -> str:
+    async def find_pharmacy_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
-        Finds pharmacies and health shops near a given place or address
+        Finds pharmacies and health shops near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :return: A list of nearby electronics stores, if found.
         """
+        setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=pharmacy", "shop=chemist", "shop=supplements",
                 "shop=health_food"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="pharmacies",
-                                   radius=6000, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, radius=6000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
+
+    async def find_fuel_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+        """
+        Finds gas stations, petrol stations, and fuel stations near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :return: A list of nearby fueling stations, if found.
+        """
+        setting = normalize_setting(setting)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = ["amenity=fuel"]
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="gas stations",
+                                   setting=setting, radius=6000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
+
+    async def find_ev_fast_chargers_near_place_with_type(
+            self, __user__: dict,
+            place: str,
+            charger_type: str,
+            setting: str,
+            __event_emitter__
+    ) -> str:
+        """
+        Finds EV (electric vehicle) DC fast chargers near a given place or address (22 kW+).
+        Does NOT find regular/slow chargers (3 kW - 11 kW) that use AC.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        The charger_type parameter can be used to constrain the search to specific charger types.
+        By default, search for all charger types unless user asks for specific types.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param charger_type: Must be "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", or "all" (default).
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :return: A list of nearby fueling stations, if found.
+        """
+        setting = normalize_setting(setting)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+
+        # possible search constraints, mapped to corresponding osm socket types.
+        param_charger_types = {
+            "chademo": "chademo",
+            "chademo3": "chaoji",
+            "chaoji": "chaoji",
+            "ccs2": "type2_combo",
+            "ccs1": "type1_combo",
+            "nacs": "nacs",
+            "gb/t": "gb_dc"
+        }
+
+        # socket types used on OSM.
+        osm_socket_types = [
+            # Various DC fast charging standards
+            "chademo", # chademo
+            "chaoji", # chademo3
+            "type2_combo", # CCS2
+            "type1_combo", # CCS1
+            "gb_dc", # chinese standard
+            "nacs", # north american standard
+
+            # not supposed to be used, but might show up.
+            "tesla_supercharger",
+            "tesla_supercharger_ccs",
+            "ccs"
+        ]
+
+        # normally, search for any of the possible chargers.
+        tags = [f"socket:{charger}=\\.*" for charger in osm_socket_types]
+
+        # or constrain search
+        if charger_type != "all":
+            if charger_type not in param_charger_types.keys():
+                return {
+                    "results": [],
+                    "instructions": "There was an error searching due to an invalid charger type.",
+                    "error_message": f"{charger_type} is not a valid charger type."
+                }
+            osm_socket_type = param_charger_types[charger_type]
+            tags = [ f"socket:{osm_socket_type}=\\.*" ]
+
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="EV chargers",
+                                   setting=setting, radius=10000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
     # This function exists to help catch situations where the user is
     # too generic in their query, or is looking for something the tool
@@ -1825,15 +2019,18 @@ class Tools:
         self,
         __user__: dict,
         place: str,
+        setting: str,
         category: str
     ) -> str:
         """
         Find shops and other places not covered by a specific
         category available in the other functions. Use this if the
         user is asking for a type of store or place that other
-        functions do not support.
+        functions do not support. For setting, specify if the place is
+        an urban area, a suburb, or a rural location.
 
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :param category: The category of place, shop, etc to look up.
         :return: A list of nearby shops.
         """
