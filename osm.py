@@ -1922,7 +1922,7 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=fuel"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="gas stations",
-                                   setting=setting, radius=6000, place=place, tags=tags,
+                                   setting=setting, radius=10000, place=place, tags=tags,
                                    event_emitter=__event_emitter__)
 
     async def find_ev_fast_chargers_near_place_with_type(
