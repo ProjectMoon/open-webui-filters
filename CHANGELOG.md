@@ -8,6 +8,9 @@
  - Initial release.
 
 # OpenStreetMap Tool
+**2.3.0:**
+ - Return replies from functions as JSON instead of raw Markdown.
+
 **2.2.2:**
  - Inform model of distance sorting method used to attempt to improve
    reasoning model performance.

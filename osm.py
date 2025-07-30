@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 2.2.2
+version: 2.3.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -67,24 +67,33 @@ example:
 Inform the user they need to fix this configuration setting.
 """.replace("\n", " ").strip()
 
-VALVES_NOT_SET = """
-Tell the user that the User-Agent and From headers
-must be set to comply with the OSM Nominatim terms
-of use: https://operations.osmfoundation.org/policies/nominatim/
-""".replace("\n", " ").strip()
+VALVES_NOT_SET = {
+    "results": [],
+    "instructions": (
+        "Tell the user that the User-Agent and From headers"
+        "must be set to comply with the OSM Nominatim terms"
+        "of use: https://operations.osmfoundation.org/policies/nominatim/"
+    ).replace("\n", " ").strip()
+}
 
-NO_RESULTS = ("No results found. Tell the user you found no results. "
-              "Do not make up answers or hallucinate. Only say you "
-              "found no results.")
+NO_RESULTS = {
+    "results": [],
+    "instructions": ("No results found. Tell the user you found no results. "
+                     "Do not make up answers or hallucinate. Only say you "
+                     "found no results.")
+    }
 
-NO_RESULTS_BAD_ADDRESS = ("No results found. Tell the user you found no results because "
-                          "OpenStreetMap could not resolve the address. "
-                          "Print the exact address or location you searched for. "
-                          "Suggest to the user that they refine their "
-                          "question, for example removing the apartment number, sub-unit, "
-                          "etc. Example: If `123 Main Street, Apt 4` returned no results, "
-                          "suggest that the user searc for `123 Main Street` instead. "
-                          "Use the address the user searched for in your example.")
+NO_RESULTS_BAD_ADDRESS = {
+    "results": [],
+    "instructions":  ("No results found. Tell the user you found no results because "
+                      "OpenStreetMap could not resolve the address. "
+                      "Print the exact address or location you searched for. "
+                      "Suggest to the user that they refine their "
+                      "question, for example removing the apartment number, sub-unit, "
+                      "etc. Example: If `123 Main Street, Apt 4` returned no results, "
+                      "suggest that the user searc for `123 Main Street` instead. "
+                      "Use the address the user searched for in your example.")
+    }
 
 NO_CONFUSION = ("**IMPORTANT!:** Check that the results match the location "
                 "the user is talking about, by analyzing the conversation history. "
@@ -126,7 +135,6 @@ def specific_place_instructions() -> str:
 
 def navigation_instructions(travel_type) -> str:
     return (
-        "# Result Instructions\n"
         "This is the navigation route that the user has requested. "
         f"These instructions are for travel by {travel_type}. "
         "Tell the user the total distance, "
@@ -142,12 +150,11 @@ def detailed_instructions(tag_type_str: str) -> str:
     detailed instructions.
     """
     return (
-        "# Detailed Search Result Instructions\n"
         f"These are some of the {tag_type_str} points of interest nearby. "
         "These are the results known to be closest to the requested location. "
         "When telling the user about them, make sure to report "
         "all the information (address, contact info, website, etc).\n\n"
-        "Tell the user about ALL the results, and give closer results "
+        "Use this information to answer the user's query. Prefer closer results "
         "first. Closer results are higher in the list. When telling the "
         "user the distance, use the TRAVEL DISTANCE. Do not say one "
         "distance is farther away than another. Just say what the "
@@ -164,7 +171,6 @@ def detailed_instructions(tag_type_str: str) -> str:
         f"\n\n{NO_CONFUSION}\n\n"
         "Remember that the CLOSEST result is first, and you should use "
         "that result first.\n\n"
-        "The results (if present) are below, in Markdown format.\n\n"
         "**ALWAYS SAY THE CLOSEST RESULT FIRST!**"
     )
 
@@ -174,7 +180,6 @@ def simple_instructions(tag_type_str: str) -> str:
     better with that.
     """
     return (
-        "# OpenStreetMap Result Instructions\n"
         f"These are some of the {tag_type_str} points of interest nearby. "
         "These are the results known to be closest to the requested location. "
         "For each result, report the following information: \n"
@@ -537,34 +542,34 @@ def convert_and_validate_results(
         if not friendly_thing:
             continue
 
-        distance = (f" - Haversine Distance from Origin: {friendly_thing['distance']} km\n"
-                    if use_distance else "")
-        travel_distance = (f" - Travel Distance from Origin: {friendly_thing['nav_distance']}\n"
-                        if use_distance and 'nav_distance' in friendly_thing else "")
         map_link = create_osm_link(friendly_thing['lat'], friendly_thing['lon'])
-        entry = (f"## {friendly_thing['name']}\n"
-                 f" - Latitude: {friendly_thing['lat']}\n"
-                 f" - Longitude: {friendly_thing['lon']}\n"
-                 f" - Address: {friendly_thing['address']}\n"
-                 f" - Amenity Type: {friendly_thing['amenity_type']}\n"
-                 f"{distance}"
-                 f"{travel_distance}"
-                 f" - OpenStreetMap link: {map_link}\n\n"
-                 f"Raw JSON data:\n"
-                 "```json\n"
-                 f"{str(thing)}\n"
-                 "```")
+        hv_distance_json = (f"{friendly_thing['distance']} km" if use_distance
+                            else "unavailable")
+        trv_distance_json = (f"{friendly_thing['nav_distance']}"
+                             if use_distance and 'nav_distance' in friendly_thing
+                             else "unavailable")
 
-        entries.append(entry)
+        # remove distances from the raw OSM json.
+        friendly_thing.pop('nav_distance', None)
+        friendly_thing.pop('distance', None)
+
+        entry_json = {
+            "latitude": friendly_thing['lat'],
+            "longitude": friendly_thing['lon'],
+            "address": friendly_thing['address'],
+            "amenity_type": friendly_thing['amenity_type'],
+            "geographical_distance": hv_distance_json,
+            "travel_distance": trv_distance_json,
+            "openstreetmap_link": map_link,
+            "raw_osm_json": thing
+        }
+
+        entries.append(entry_json)
 
     if len(entries) == 0:
         return None
 
-    result_text = "\n\n".join(entries)
-    header = ("# Search Results\n"
-              f"Ordered by {sort_message} to {original_location}.")
-
-    return f"{header}\n\n{result_text}"
+    return entries
 
 class OsmCache:
     def __init__(self, filename="/tmp/osm.json"):
@@ -1195,13 +1200,12 @@ class OsmSearcher:
             if search_results:
                 result_instructions = self.get_result_instructions(tag_type_str)
             else:
-                result_instructions = ("No results found at all. "
-                                       "Tell the user there are no results.")
+                result_instructions = "No results found at all. Tell the user there are no results."
 
-            resp = (
-                f"{result_instructions}\n\n"
-                f"{search_results}"
-            )
+            resp = {
+                "instructions": result_instructions,
+                "results": search_results if search_results else []
+            }
 
             # emit citations for the actual results.
             await self.event_search_complete(category, place_display_name, len(things_nearby))
@@ -1215,9 +1219,11 @@ class OsmSearcher:
         except Exception as e:
             print(e)
             await self.event_error(e)
-            result = (f"No results were found, because of an error. "
+            instructions = (f"No results were found, because of an error. "
                       f"Tell the user that there was an error finding results. "
                       f"The error was: {e}")
+
+            result = { "instructions": instructions }
             return { "place_display_name": place_display_name, "results": result, "things": [] }
 
 
@@ -1238,36 +1244,16 @@ async def do_osm_search(
                     "done": True,
                 },
             })
-        return OLD_VALVE_SETTING.replace("{OLD}", valves.nominatim_url)
+
+        return {
+            "instructions": OLD_VALVE_SETTING.replace("{OLD}", valves.nominatim_url),
+            "results": []
+        }
 
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     search = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
     return search["results"]
-
-async def do_osm_search_full(
-        valves, user_valves, place, tags,
-        category="POIs", event_emitter=None, limit=5, radius=4000
-):
-    """Like do_osm_search, but return the full result set instead."""
-    # handle breaking 1.0 change, in case of old Nominatim valve settings.
-    if valves.nominatim_url.endswith("/search"):
-        message = "Old Nominatim URL setting still in use!"
-        print(f"[OSM] ERROR: {message}")
-        if valves.status_indicators and event_emitter is not None:
-            await event_emitter({
-                "type": "status",
-                "data": {
-                    "status": "error",
-                    "description": f"Error searching OpenStreetMap: {message}",
-                    "done": True,
-                },
-            })
-        return OLD_VALVE_SETTING.replace("{OLD}", valves.nominatim_url)
-
-    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
-    searcher = OsmSearcher(valves, user_valves, event_emitter)
-    return await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
 
 class OsmNavigator:
     def __init__(
@@ -1352,33 +1338,36 @@ class OsmNavigator:
 
                 return f"- {instruction} ({distance}, {duration})"
 
-            instructions = "\n".join([
+            nav_instructions = [
                 create_step_instruction(step)
                 for segment in route["segments"]
-                for step in segment["steps"]]
-            )
+                for step in segment["steps"]
+            ]
 
-            markdown = (
-                "## Routing Instructions\n"
-                f"These are the routing instructions from "
-                f"{start_place} to {destination_place}.\n\n"
-                f" - Total Distance: {total_distance} km\n"
-                f" - Travel Time: {str(travel_time)} minutes"
-                "\n\n"
-                "Navigation Instructions:\n\n"
-                f"{instructions}"
-            )
+            result = {
+                "instructions": navigation_instructions(travel_type),
+                "travel_method": travel_type,
+                "total_distance": f"{total_distance} km",
+                "travel_time": f"{str(travel_time)} minutes",
+                "route": nav_instructions
+            }
 
-            resp = f"{navigation_instructions(travel_type)}\n\n{markdown}"
             await self.event_navigating(done=True)
-            return resp
+            return result
         except Exception as e:
             print(e)
             await self.event_error(e)
-            return (f"There are no results due to an error. "
-                    "Tell the user that there was an error. "
-                    f"The error was: {e}. "
-                    f"Tell the user the error message.")
+            message = (f"There are no results due to an error. "
+                       "Tell the user that there was an error.")
+
+            return {
+                "instructions": message,
+                "error_message": f"{e}",
+                "travel_method": None,
+                "total_distance": None,
+                "travel_time": None,
+                "route": None
+            }
 
 
 class Tools:
@@ -1473,12 +1462,17 @@ class Tools:
         try:
             result = await searcher.nominatim_search(address_or_place, limit=5)
             if result:
-                results_in_md = convert_and_validate_results(
+                results = convert_and_validate_results(
                     address_or_place, result,
                     sort_message="importance", use_distance=False
                 )
 
-                resp = f"{specific_place_instructions()}\n\n{results_in_md}"
+
+                resp = {
+                    "instructions": specific_place_instructions(),
+                    "results": results if results else []
+                }
+
                 return resp
             else:
                 return NO_RESULTS
