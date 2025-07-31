@@ -1,4 +1,4 @@
-"""
+""""
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
@@ -1434,6 +1434,28 @@ def recreation_to_tags(recreation_type: str) -> List[str]:
         return []
 
 
+def food_category_to_tags(food_type: str) -> List[str]:
+    """
+    Convert the specified type parameter for
+    find_food_and_bakeries_near_place into the correct list of tags.
+    """
+    if food_type == "sit_down_restaurants":
+        return ["amenity=restaurant", "amenity=eatery", "amenity=canteen"]
+    elif food_type == "fast_food":
+        return ["amenity=fast_food"]
+    elif food_type == "cafe_or_bakery":
+        return ["shop=bakery", "amenity=cafe"]
+    elif food_type == "bars_and_pubs":
+        return ["amenity=bar", "amenity=pub", "amenity=biergarten"]
+    else:
+        return []
+
+# For certain things, we might need two-step searching: one call to
+# return list of possible tags, and another to return the actual
+# results. This will prevent the model from hallucinating. Maybe also
+# use it to control limits. Urban = higher limits for stuff like
+# restaurants.
+
 class Tools:
     class Valves(BaseModel):
         user_agent: str = Field(
@@ -1591,7 +1613,7 @@ class Tools:
                 "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
             }
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_recreation_by_category_near_place(
@@ -1606,7 +1628,6 @@ class Tools:
         :param category: Category of recreation to search for. Must be one of "swimming", "playgrounds", "amusement", or "sports".
         """
         allowed_categories = ["swimming", "playgrounds", "amusement", "sports"]
-
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = recreation_to_tags(category)
@@ -1629,48 +1650,35 @@ class Tools:
         elif category == "playgrounds":
             limit = 10
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__)
 
+    async def find_eateries_by_category_near_place(
+                self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+        ) -> str:
+            """
+            Finds places to eat or drink on OpenStreetMap near a given place or address.
+            For setting, specify if the place is an urban area, a suburb, or a rural location.
+            If it is unclear what category of eatery the user wants, ask for clarification.
+            :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+            :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+            :param category: Category of store to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
+            """
+            allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
+            setting = normalize_setting(setting)
+            user_valves = __user__["valves"] if "valves" in __user__ else None
+            tags = food_category_to_tags(category)
 
-    async def find_bakeries_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds bakeries on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby bakeries, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["shop=bakery"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bakeries",
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+            if not tags:
+                return {
+                    "results": [],
+                    "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+                    "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
+                }
 
-    async def find_food_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds restaurants, fast food, bars, breweries, pubs, etc on
-        OpenStreetMap near a given place or address. For setting,
-        specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby restaurants, eateries, etc, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = [
-            "amenity=restaurant",
-            "amenity=fast_food",
-            "amenity=cafe",
-            "amenity=pub",
-            "amenity=bar",
-            "amenity=eatery",
-            "amenity=biergarten",
-            "amenity=canteen"
-        ]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="restaurants and food",
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+            return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+                                       limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
 
     async def find_tourist_attractions_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
