@@ -21,7 +21,7 @@ from openrouteservice.directions import directions as ors_directions
 
 from urllib.parse import urljoin
 from operator import itemgetter
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 # Yoinked from the OpenWebUI CSS
