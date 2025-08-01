@@ -8,6 +8,10 @@
  - Initial release.
 
 # OpenStreetMap Tool
+**3.1.1:**
+ - Tool will not search for cannabis stores when looking for cafes and
+   bakeries.
+
 **3.1.0:**
  - Drastically reduce number of functions to save on LLM context
    window size.
