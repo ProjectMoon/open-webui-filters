@@ -1477,6 +1477,16 @@ def healthcare_category_to_tags(healthcare_type: str) -> List[str]:
     else:
         return []
 
+def education_category_to_tags(education_type: str) -> List[str]:
+    if education_type == "schools":
+        return ["amenity=school"]
+    elif education_type == "universities_and_colleges":
+        return ["amenity=university", "amenity=college"]
+    elif education_type == "libraries":
+        return ["amenity=library"]
+    else:
+        return []
+
 # For certain things, we might need two-step searching: one call to
 # return list of possible tags, and another to return the actual
 # results. This will prevent the model from hallucinating. Maybe also
@@ -1542,7 +1552,7 @@ class Tools:
         print(f"[OSM] Resolving [{latitude}, {longitude}] to address.")
         return await self.find_specific_place(f"{latitude}, {longitude}", __event_emitter__)
 
-    async def find_specific_named_business_or_place_near_coordinates(
+    async def find_specific_named_business_or_landmark_near_coordinates(
             self, store_or_business_name: str, latitude: float, longitude: float, __event_emitter__
     ) -> str:
         """
@@ -1687,7 +1697,7 @@ class Tools:
         """
         Finds places to eat or drink on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        If it is unclear what category of eatery the user wants, ask for clarification.
+        If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :param category: Category of eateries to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
@@ -1713,7 +1723,7 @@ class Tools:
         """
         Find tourist attractions, accommodation, public transport, bike rentals, or car rentals on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        If it is unclear what category of eatery the user wants, ask for clarification.
+        If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :param category: Category of travel info to search for. Must be one of "tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport".
@@ -1753,7 +1763,7 @@ class Tools:
         """
         Find healthcare, doctors, hospitals, and pharmacies on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        If it is unclear what category of eatery the user wants, ask for clarification.
+        If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :param category: Category of healthcare to search for. Must be one of "doctor", "hospital", "pharmacy".
@@ -1788,48 +1798,30 @@ class Tools:
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_schools_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+    async def find_education_by_category_near_place(
+        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+    ) -> str:
         """
-        Finds schools (NOT universities) on OpenStreetMap near a given place or address.
+        Find education institutions and resources on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
+        Note: category "schools" searches only for primary and secondary schools, NOT universities or colleges.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby schools, if found.
+        :param category: Category of education to search for. Must be one of "schools", "universities_and_colleges", "libraries".
         """
+        allowed_categories = ["schools", "universities_and_colleges", "libraries"]
         setting = normalize_setting(setting)
-        tags = ["amenity=school"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="schools",
-                                   setting=setting, limit=10, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
+        tags = education_category_to_tags(category)
 
-    async def find_universities_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds universities and colleges on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby schools, if found.
-        """
-        setting = normalize_setting(setting)
-        tags = ["amenity=university", "amenity=college"]
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="universities",
-                                   setting=setting, limit=10, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
+        if not tags:
+            return {
+                "results": [],
+                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
+            }
 
-    async def find_libraries_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds libraries on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby libraries, if found.
-        """
-        setting = normalize_setting(setting)
-        tags = ["amenity=library"]
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="libraries",
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_fuel_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
