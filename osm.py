@@ -1026,12 +1026,14 @@ class OsmSearcher:
 
 
     async def overpass_search(
-            self, place, tags, bbox, limit=5, radius=4000
+            self, place, tags, bbox, limit=5, radius=4000, not_tag_groups={}
     ) -> (List[dict], List[dict]):
         """
         Return a list relevant of OSM nodes and ways. Some
         post-processing is done on ways in order to add coordinates to
-        them.
+        them. Optionally specify not_tag_groups, which is a dict of
+        tag to values, all of which will be excluded from the search.
+
         """
         print(f"Searching Overpass Turbo around origin {place}")
         headers = self.create_headers()
@@ -1046,10 +1048,15 @@ class OsmSearcher:
         search_groups = [f'"{tag_type}"~"{"|".join(values)}"'
                          for tag_type, values in tag_groups.items()]
 
+        not_search_groups = [f'"{tag_type}"!~"{"|".join(values)}"'
+                                 for tag_type, values in not_tag_groups.items()]
+
+        not_search_query = "".join([f"[{query}]" for query in not_search_groups])
+
         searches = []
         for search_group in search_groups:
             searches.append(
-                f'nwr[{search_group}]{around}'
+                f'nwr[{search_group}]{not_search_query}{around}'
             )
 
         search = ";\n".join(searches)
@@ -1109,8 +1116,9 @@ class OsmSearcher:
             print(response.text)
             raise Exception(f"Error calling Overpass API: {response.text}")
 
-    async def get_things_nearby(self, nominatim_result, place, tags, bbox, limit, radius):
-        nodes, ways = await self.overpass_search(place, tags, bbox, limit, radius)
+    async def get_things_nearby(self, nominatim_result, place, tags,
+                                bbox, limit, radius, not_tag_groups):
+        nodes, ways = await self.overpass_search(place, tags, bbox, limit, radius, not_tag_groups)
 
         # use results from overpass, but if they do not exist,
         # fall back to the nominatim result. this may or may
@@ -1141,7 +1149,7 @@ class OsmSearcher:
 
     async def search_nearby(
             self, place: str, tags: List[str], limit: int=5, radius: int=4000,
-            category: str="POIs"
+            category: str="POIs", not_tag_groups={}
     ) -> dict:
         headers = self.create_headers()
         if not headers:
@@ -1183,7 +1191,7 @@ class OsmSearcher:
 
             print(f"[OSM] Searching for {category} near {place_display_name}")
             things_nearby, sort_method = await self.get_things_nearby(nominatim_result, place, tags,
-                                                         bbox, limit, radius)
+                                                         bbox, limit, radius, not_tag_groups)
 
             if not things_nearby or len(things_nearby) == 0:
                 await self.event_search_complete(category, place_display_name, 0)
@@ -1228,7 +1236,7 @@ class OsmSearcher:
 async def do_osm_search(
         valves, user_valves, place, tags,
         category="POIs", event_emitter=None, limit=5, radius=4000,
-        setting='urban', search_mode='OR'
+        setting='urban', not_tag_groups={}
 ):
     radius = radius * setting_to_multiplier(setting)
     # handle breaking 1.0 change, in case of old Nominatim valve settings.
@@ -1252,7 +1260,8 @@ async def do_osm_search(
 
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place} ({setting} setting)")
     searcher = OsmSearcher(valves, user_valves, event_emitter)
-    search = await searcher.search_nearby(place, tags, limit=limit, radius=radius, category=category)
+    search = await searcher.search_nearby(place, tags, limit=limit, radius=radius,
+                                          category=category, not_tag_groups=not_tag_groups)
     return search["results"]
 
 class OsmNavigator:
@@ -1391,101 +1400,102 @@ def setting_to_multiplier(setting: str) -> int:
     return 1
 
 
-def store_category_to_tags(store_type: str) -> List[str]:
+def store_category_to_tags(store_type: str) -> Tuple[List[str], dict]:
     """
     Convert the specified type parameter for
     find_stores_near_place into the correct list of tags.
     """
     if store_type == "groceries":
-        return ["shop=supermarket", "shop=grocery", "shop=greengrocer"]
+        return ["shop=supermarket", "shop=grocery", "shop=greengrocer"], {}
     elif store_type == "convenience":
-        return ["shop=convenience"]
+        return ["shop=convenience"], {}
     elif store_type == "alcohol":
-        return ["shop=alcohol"]
+        return ["shop=alcohol"], {}
     elif store_type == "drugs" or store_type == "cannabis":
-        return ["shop=coffeeshop", "shop=cannabis", "shop=headshop", "shop=smartshop"]
+        return ["shop=coffeeshop", "shop=cannabis", "shop=headshop", "shop=smartshop"], {}
     elif store_type == "electronics":
-        return ["shop=electronics"]
+        return ["shop=electronics"], {}
     elif store_type == "electrical":
-        return ["shop=lighting", "shop=electrical"]
+        return ["shop=lighting", "shop=electrical"], {}
     elif store_type == "hardware" or store_type == "diy":
-        return ["shop=doityourself", "shop=hardware", "shop=power_tools", "shop=groundskeeping", "shop=trade"]
+        return ["shop=doityourself", "shop=hardware", "shop=power_tools", "shop=groundskeeping", "shop=trade"], {}
     elif store_type == "pharmacies":
-        return ["amenity=pharmacy", "shop=chemist", "shop=supplements", "shop=health_food"]
+        return ["amenity=pharmacy", "shop=chemist", "shop=supplements", "shop=health_food"], {}
     else:
-        return []
+        return [], {}
 
 
-def recreation_to_tags(recreation_type: str) -> List[str]:
+def recreation_to_tags(recreation_type: str) -> Tuple[List[str], dict]:
     """
     Convert the specified type parameter for
     find_recreation_near_place into the correct list of tags.
     """
     if recreation_type == "swimming":
         return ["leisure=swimming_pool", "leisure=swimming_area",
-                "leisure=water_park", "tourism=theme_park"]
+                "leisure=water_park", "tourism=theme_park"], {}
     elif recreation_type == "playgrounds":
-        return ["leisure=playground"]
+        return ["leisure=playground"], {}
     elif recreation_type == "amusement":
-        return ["leisure=park", "leisure=amusement_arcade", "tourism=theme_park"]
+        return ["leisure=park", "leisure=amusement_arcade", "tourism=theme_park"], {}
     elif recreation_type == "sports":
-        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course"]
+        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course"], {}
     else:
-        return []
+        return [], {}
 
 
-def food_category_to_tags(food_type: str) -> List[str]:
+def food_category_to_tags(food_type: str) -> Tuple[List[str], dict]:
     """
     Convert the specified type parameter for
     find_food_and_bakeries_near_place into the correct list of tags.
     """
     if food_type == "sit_down_restaurants":
-        return ["amenity=restaurant", "amenity=eatery", "amenity=canteen"]
+        return ["amenity=restaurant", "amenity=eatery", "amenity=canteen"], {}
     elif food_type == "fast_food":
-        return ["amenity=fast_food"]
+        return ["amenity=fast_food"], {}
     elif food_type == "cafe_or_bakery":
-        return ["shop=bakery", "amenity=cafe"]
+        # cannabis stores are sometimes tagged with amenity=cafe.
+        return ["shop=bakery", "amenity=cafe"], { "shop": [ "cannabis" ] }
     elif food_type == "bars_and_pubs":
-        return ["amenity=bar", "amenity=pub", "amenity=biergarten"]
+        return ["amenity=bar", "amenity=pub", "amenity=biergarten"], {}
     else:
-        return []
+        return [], {}
 
-def travel_category_to_tags(travel_type: str) -> List[str]:
+def travel_category_to_tags(travel_type: str) -> Tuple[List[str], dict]:
     if travel_type == "tourist_attractions":
         return ["tourism=museum", "tourism=aquarium", "tourism=zoo",
-                "tourism=attraction", "tourism=gallery", "tourism=artwork"]
+                "tourism=attraction", "tourism=gallery", "tourism=artwork"], {}
     elif travel_type == "accommodation":
         return ["tourism=hotel", "tourism=chalet", "tourism=guest_house",
-                "tourism=guesthouse", "tourism=motel", "tourism=hostel"]
+                "tourism=guesthouse", "tourism=motel", "tourism=hostel"], {}
     elif travel_type == "bike_rentals":
-        return ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
+        return ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"], {}
     elif travel_type == "car_rentals":
-        return ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
+        return ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"], {}
     elif travel_type == "public_transport":
         return ["highway=bus_stop", "amenity=bus_station", "railway=station", "railway=halt",
-                "railway=tram_stop", "station=subway", "amenity=ferry_terminal", "public_transport=station"]
+                "railway=tram_stop", "station=subway", "amenity=ferry_terminal", "public_transport=station"], {}
     else:
-        return []
+        return [], {}
 
-def healthcare_category_to_tags(healthcare_type: str) -> List[str]:
+def healthcare_category_to_tags(healthcare_type: str) -> Tuple[List[str], dict]:
     if healthcare_type == "doctor":
-        return ["amenity=clinic", "amenity=doctors", "healthcare=doctor"]
+        return ["amenity=clinic", "amenity=doctors", "healthcare=doctor"], {}
     elif healthcare_type == "hospital":
-        return ["healthcare=hospital", "amenity=hospitals"]
+        return ["healthcare=hospital", "amenity=hospitals"], {}
     elif healthcare_type == "pharmacy":
-        return ["amenity=pharmacy", "shop=chemist"]
+        return ["amenity=pharmacy", "shop=chemist"], {}
     else:
         return []
 
-def education_category_to_tags(education_type: str) -> List[str]:
+def education_category_to_tags(education_type: str) -> Tuple[List[str], dict]:
     if education_type == "schools":
-        return ["amenity=school"]
+        return ["amenity=school"], {}
     elif education_type == "universities_and_colleges":
-        return ["amenity=university", "amenity=college"]
+        return ["amenity=university", "amenity=college"], {}
     elif education_type == "libraries":
-        return ["amenity=library"]
+        return ["amenity=library"], {}
     else:
-        return []
+        return [], {}
 
 def validate_category(category, allowed_categories):
     if category not in allowed_categories:
@@ -1695,13 +1705,15 @@ class Tools:
 
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = store_category_to_tags(category)
+        tags, not_tag_groups = store_category_to_tags(category)
+
         validation_error = validate_tags(category, tags, allowed_categories)
         if validation_error:
             return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
+                                   not_tag_groups=not_tag_groups)
 
     async def find_recreation_by_category_near_place(
             self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
@@ -1717,7 +1729,7 @@ class Tools:
         allowed_categories = ["swimming", "playgrounds", "amusement", "sports"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = recreation_to_tags(category)
+        tags, not_tag_groups = recreation_to_tags(category)
 
         validation_error = validate_tags(category, tags, allowed_categories)
         if validation_error:
@@ -1736,7 +1748,7 @@ class Tools:
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
+                                   event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
     async def find_eateries_by_category_near_place(
             self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
@@ -1752,14 +1764,15 @@ class Tools:
         allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = food_category_to_tags(category)
+        tags, not_tag_groups = food_category_to_tags(category)
 
         validation_error = validate_tags(category, tags, allowed_categories)
         if validation_error:
             return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
-                                   limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
+                                   not_tag_groups=not_tag_groups)
 
     async def find_travel_info_by_category_near_place(
         self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
@@ -1775,7 +1788,7 @@ class Tools:
         allowed_categories = ["tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = travel_category_to_tags(category)
+        tags, not_tag_groups = travel_category_to_tags(category)
 
         validation_error = validate_tags(category, tags, allowed_categories)
         if validation_error:
@@ -1796,7 +1809,7 @@ class Tools:
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    limit=limit, radius=radius, setting=setting, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
+                                   event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
     async def find_healthcare_by_category_near_place(
         self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
@@ -1812,14 +1825,15 @@ class Tools:
         allowed_categories = ["doctor", "hospital", "pharmacy"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = healthcare_category_to_tags(category)
+        tags, not_tag_groups = healthcare_category_to_tags(category)
 
         validation_error = validate_tags(category, tags, allowed_categories)
         if validation_error:
             return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
+                                   not_tag_groups=not_tag_groups)
 
     async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
@@ -1850,14 +1864,15 @@ class Tools:
         allowed_categories = ["schools", "universities_and_colleges", "libraries"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = education_category_to_tags(category)
+        tags, not_tag_groups = education_category_to_tags(category)
 
         validation_error = validate_tags(category, tags, allowed_categories)
         if validation_error:
             return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
+                                   not_tag_groups=not_tag_groups)
 
     async def find_fuel_or_charging_by_category_near_place(
             self, place: str, category: str, fuel_type: str, ev_charger_type: str, setting: str, __user__: dict, __event_emitter__
