@@ -1450,6 +1450,18 @@ def food_category_to_tags(food_type: str) -> List[str]:
     else:
         return []
 
+def travel_category_to_tags(travel_type: str) -> List[str]:
+    if travel_type == "tourist_attractions":
+        return ["tourism=museum", "tourism=aquarium", "tourism=zoo",
+                "tourism=attraction", "tourism=gallery", "tourism=artwork"]
+    elif travel_type == "accommodation":
+        return ["tourism=hotel", "tourism=chalet", "tourism=guest_house",
+                "tourism=guesthouse", "tourism=motel", "tourism=hostel"]
+    elif travel_type == "bike_rentals":
+        return ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
+    elif travel_type == "car_rentals":
+        return ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
+
 # For certain things, we might need two-step searching: one call to
 # return list of possible tags, and another to return the actual
 # results. This will prevent the model from hallucinating. Maybe also
@@ -1655,51 +1667,68 @@ class Tools:
                                    event_emitter=__event_emitter__)
 
     async def find_eateries_by_category_near_place(
-                self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
-        ) -> str:
-            """
-            Finds places to eat or drink on OpenStreetMap near a given place or address.
-            For setting, specify if the place is an urban area, a suburb, or a rural location.
-            If it is unclear what category of eatery the user wants, ask for clarification.
-            :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-            :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-            :param category: Category of store to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
-            """
-            allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
-            setting = normalize_setting(setting)
-            user_valves = __user__["valves"] if "valves" in __user__ else None
-            tags = food_category_to_tags(category)
-
-            if not tags:
-                return {
-                    "results": [],
-                    "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-                    "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
-                }
-
-            return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
-                                       limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
-
-
-    async def find_tourist_attractions_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+            self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+    ) -> str:
         """
-        Finds museums, landmarks, and other tourist attractions on OpenStreetMap near
-        a given place or address. For setting, specify if the place is an urban
-        area, a suburb, or a rural location.
+        Finds places to eat or drink on OpenStreetMap near a given place or address.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        If it is unclear what category of eatery the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of tourist attractions, if found.
+        :param category: Category of store to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
         """
+        allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["tourism=museum", "tourism=aquarium", "tourism=zoo",
-                "tourism=attraction", "tourism=gallery", "tourism=artwork"]
+        tags = food_category_to_tags(category)
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="tourist attractions",
-                                   setting=setting, limit=10, radius=10000, place=place, tags=tags,
+        if not tags:
+            return {
+                "results": [],
+                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
+            }
+
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+                                   limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+
+    async def find_travel_info_by_category_near_place(
+        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+    ) -> str:
+        """
+        Find tourist attractions, accommodation, bike rentals, or car rentals on OpenStreetMap.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        If it is unclear what category of eatery the user wants, ask for clarification.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :param category: Category of travel info to search for. Must be one of "tourist_attractions", "accommodation", "bike_rentals", "car_rentals".
+        """
+        allowed_categories = ["tourist_attractions", "accommodation", "bike_rentals", "car_rentals"]
+        setting = normalize_setting(setting)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = travel_category_to_tags(category)
+
+        if not tags:
+            return {
+                "results": [],
+                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
+            }
+
+        radius = 4000
+        limit = 5
+
+        if category == "car_rentals":
+            radius = 6000
+        elif category == "tourist_attractions":
+            radius = 10000
+            limit = 10
+        elif category == "accommodation":
+            radius = 10000
+
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+                                   limit=limit, radius=radius, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__)
-
-
 
     async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
@@ -1715,26 +1744,6 @@ class Tools:
         tags = ["amenity=place_of_worship"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
-
-
-    async def find_accommodation_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds accommodation (hotels, guesthouses, hostels, etc) on OpenStreetMap near a
-        given place or address. For setting, specify if the place is an urban area,
-        a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby accommodation, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = [
-            "tourism=hotel", "tourism=chalet", "tourism=guest_house", "tourism=guesthouse",
-            "tourism=motel", "tourism=hostel"
-        ]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="accommodation",
-                                   setting=setting, radius=10000, place=place, tags=tags, event_emitter=__event_emitter__)
-
 
     async def find_schools_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
@@ -1796,35 +1805,6 @@ class Tools:
                 "public_transport=station"]
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="public transport",
                                    setting=setting, limit=10, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
-
-    async def find_bike_rentals_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds bike rentals on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby bike rentals, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="bike rentals",
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
-
-    async def find_car_rentals_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds bike rentals on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby bike rentals, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="car rentals",
-                                   setting=setting, radius=6000, place=place, tags=tags,
                                    event_emitter=__event_emitter__)
 
     async def find_doctor_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
