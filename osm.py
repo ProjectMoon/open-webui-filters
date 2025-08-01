@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 3.0.0
+version: 3.1.0
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -1913,7 +1913,6 @@ class Tools:
 
         # Main part of fuel search function
         allowed_categories = ["gas_or_petrol", "ev_fast_charging"]
-        user_valves = __user__["valves"] if "valves" in __user__ else None
         validation_error = validate_category(category, allowed_categories)
 
         if validation_error:

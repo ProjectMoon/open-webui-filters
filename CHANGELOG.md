@@ -8,6 +8,12 @@
  - Initial release.
 
 # OpenStreetMap Tool
+**3.1.0:**
+ - Drastically reduce number of functions to save on LLM context
+   window size.
+ - There is a smaller number of functions, that take categories of
+   things to search for.
+
 **3.0.0:**
  - New feature: adjust search radius based on location being urban,
    suburban, or rural. Rural has a much larger search radius than
