@@ -1513,6 +1513,34 @@ def validate_tags(category, tags, allowed_categories):
     return None
 
 
+# EV charger mappings, moved out of original function for readability.
+EV_CHARGER_TOOL_INPUT_CHARGER_TYPES = {
+    "chademo": "chademo",
+    "chademo3": "chaoji",
+    "chaoji": "chaoji",
+    "ccs2": "type2_combo",
+    "ccs1": "type1_combo",
+    "nacs": "nacs",
+    "gb/t": "gb_dc"
+}
+
+# socket types used on OSM.
+EV_CHARGER_OSM_SOCKET_TYPES = [
+    # Various DC fast charging standards
+    "chademo", # chademo
+    "chaoji", # chademo3
+    "type2_combo", # CCS2
+    "type1_combo", # CCS1
+    "gb_dc", # chinese standard
+    "nacs", # north american standard
+
+    # not supposed to be used, but can show up.
+    "tesla_supercharger",
+    "tesla_supercharger_ccs",
+    "ccs"
+]
+
+
 # For certain things, we might need two-step searching: one call to
 # return list of possible tags, and another to return the actual
 # results. This will prevent the model from hallucinating. Maybe also
@@ -1837,16 +1865,53 @@ class Tools:
         """
         Finds gas stations, petrol stations, fuel stations, or EV fast chargers near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        Does not find slow (regular) EV chargers.
-        The fuel_type parameter MUST be "not_applicable" when searching for EV chargers.
+        Does not find slow (regular) EV chargers. The fuel_type parameter MUST be "not_applicable" when searching for EV chargers.
         The ev_charger_type parameter MUST be "not_applicable" when searching for gas/petrol stations.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :param category: Category to search for. Must be one of "gas_or_petrol", "ev_fast_charging".
-        :param fuel_type: Must be one of "petrol", "diesel", "not_applicable", or "all" (default).
-        :param ev_charger_type: Must be one of "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", "not_applicable", or "all" (default).
+        :param fuel_type: Must be one of "petrol", "diesel", "not_applicable" (if searching for EV chargers), or "all" (default).
+        :param ev_charger_type: Must be one of "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", "not_applicable" (if searching for fuel), or "all" (default).
         :return: A list of nearby fueling stations, if found.
         """
+        # subfunction to find fuel
+        async def _find_fuel_near_place(valves, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+            setting = normalize_setting(setting)
+            user_valves = __user__["valves"] if "valves" in __user__ else None
+            tags = ["amenity=fuel"]
+            return await do_osm_search(valves=valves, user_valves=user_valves, category="gas stations",
+                                       setting=setting, radius=10000, place=place, tags=tags,
+                                       event_emitter=__event_emitter__)
+
+        # subfunction to find EV fast chargers.
+        async def _find_ev_fast_chargers_near_place_with_type(
+                valves, __user__: dict, place: str, charger_type: str, setting: str, __event_emitter__
+        ) -> str:
+            setting = normalize_setting(setting)
+            user_valves = __user__["valves"] if "valves" in __user__ else None
+            charger_type = charger_type.lower().replace('"', "").replace("'", "")
+
+            # normally, search for any of the possible chargers.
+            tags = [f"socket:{charger}=\\.*" for charger in EV_CHARGER_OSM_SOCKET_TYPES]
+
+            # or, constrain search?
+            if charger_type != "all":
+                if charger_type not in EV_CHARGER_TOOL_INPUT_CHARGER_TYPES.keys():
+                    return {
+                        "results": [],
+                        "instructions": "There was an error searching due to an invalid charger type.",
+                        "error_message": f"{charger_type} is not a valid charger type."
+                    }
+
+                osm_socket_type = EV_CHARGER_TOOL_INPUT_CHARGER_TYPES[charger_type]
+                tags = [ f"socket:{osm_socket_type}=\\.*" ]
+
+            return await do_osm_search(valves=valves, user_valves=user_valves, category="EV chargers",
+                                       setting=setting, radius=10000, place=place, tags=tags,
+                                       event_emitter=__event_emitter__)
+
+
+        # Main part of fuel search function
         allowed_categories = ["gas_or_petrol", "ev_fast_charging"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
         validation_error = validate_category(category, allowed_categories)
@@ -1855,77 +1920,13 @@ class Tools:
             return validation_error
 
         if category == "gas_or_petrol":
-            print(f"[OSM] WARN: Currently ignoring fuel type parameter (was {fuel_type}")
-            return await self._find_fuel_near_place(__user__, place, setting, __event_emitter__)
+            print(f"[OSM] WARN: Currently ignoring fuel type parameter (was '{fuel_type}')")
+            return await _find_fuel_near_place(self.valves, __user__, place, setting, __event_emitter__)
         elif category == "ev_fast_charging":
-            return await self._find_ev_fast_chargers_near_place_with_type(
-                __user__, place, ev_charger_type, setting, __event_emitter__
+            return await _find_ev_fast_chargers_near_place_with_type(
+                self.valves, __user__, place, ev_charger_type, setting, __event_emitter__
             )
 
-    async def _find_fuel_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["amenity=fuel"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="gas stations",
-                                   setting=setting, radius=10000, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
-
-    async def _find_ev_fast_chargers_near_place_with_type(
-            self, __user__: dict,
-            place: str,
-            charger_type: str,
-            setting: str,
-            __event_emitter__
-    ) -> str:
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        charger_type = charger_type.lower().replace('"', "").replace("'", "")
-
-        # possible search constraints, mapped to corresponding osm
-        # socket types.
-        param_charger_types = {
-            "chademo": "chademo",
-            "chademo3": "chaoji",
-            "chaoji": "chaoji",
-            "ccs2": "type2_combo",
-            "ccs1": "type1_combo",
-            "nacs": "nacs",
-            "gb/t": "gb_dc"
-        }
-
-        # socket types used on OSM.
-        osm_socket_types = [
-            # Various DC fast charging standards
-            "chademo", # chademo
-            "chaoji", # chademo3
-            "type2_combo", # CCS2
-            "type1_combo", # CCS1
-            "gb_dc", # chinese standard
-            "nacs", # north american standard
-
-            # not supposed to be used, but can show up.
-            "tesla_supercharger",
-            "tesla_supercharger_ccs",
-            "ccs"
-        ]
-
-        # normally, search for any of the possible chargers.
-        tags = [f"socket:{charger}=\\.*" for charger in osm_socket_types]
-
-        # or, constrain search?
-        if charger_type != "all":
-            if charger_type not in param_charger_types.keys():
-                return {
-                    "results": [],
-                    "instructions": "There was an error searching due to an invalid charger type.",
-                    "error_message": f"{charger_type} is not a valid charger type."
-                }
-            osm_socket_type = param_charger_types[charger_type]
-            tags = [ f"socket:{osm_socket_type}=\\.*" ]
-
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="EV chargers",
-                                   setting=setting, radius=10000, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
 
     # This function exists to help catch situations where the user is
     # too generic in their query, or is looking for something the tool
