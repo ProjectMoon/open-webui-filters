@@ -1464,6 +1464,18 @@ def travel_category_to_tags(travel_type: str) -> List[str]:
     elif travel_type == "public_transport":
         return ["highway=bus_stop", "amenity=bus_station", "railway=station", "railway=halt",
                 "railway=tram_stop", "station=subway", "amenity=ferry_terminal", "public_transport=station"]
+    else:
+        return []
+
+def healthcare_category_to_tags(healthcare_type: str) -> List[str]:
+    if healthcare_type == "doctor":
+        return ["amenity=clinic", "amenity=doctors", "healthcare=doctor"]
+    elif healthcare_type == "hospital":
+        return ["healthcare=hospital", "amenity=hospitals"]
+    elif healthcare_type == "pharmacy":
+        return ["amenity=pharmacy", "shop=chemist"]
+    else:
+        return []
 
 # For certain things, we might need two-step searching: one call to
 # return list of possible tags, and another to return the actual
@@ -1735,6 +1747,32 @@ class Tools:
                                    limit=limit, radius=radius, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__)
 
+    async def find_healthcare_by_category_near_place(
+        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+    ) -> str:
+        """
+        Find healthcare, doctors, hospitals, and pharmacies on OpenStreetMap.
+        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        If it is unclear what category of eatery the user wants, ask for clarification.
+        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :param category: Category of healthcare to search for. Must be one of "doctor", "hospital", "pharmacy".
+        """
+        allowed_categories = ["doctor", "hospital", "pharmacy"]
+        setting = normalize_setting(setting)
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        tags = healthcare_category_to_tags(category)
+
+        if not tags:
+            return {
+                "results": [],
+                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
+            }
+
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+
     async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
@@ -1792,34 +1830,6 @@ class Tools:
         tags = ["amenity=library"]
         user_valves = __user__["valves"] if "valves" in __user__ else None
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="libraries",
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
-
-    async def find_doctor_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds doctors near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby electronics stores, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["amenity=clinic", "amenity=doctors", "healthcare=doctor"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="doctors",
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
-
-    async def find_hospital_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds doctors near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby electronics stores, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["healthcare=hospital", "amenity=hospitals"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="hospitals",
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_fuel_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
