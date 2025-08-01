@@ -1,4 +1,4 @@
-""""
+"""
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
