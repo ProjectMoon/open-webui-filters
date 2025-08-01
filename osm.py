@@ -1487,6 +1487,32 @@ def education_category_to_tags(education_type: str) -> List[str]:
     else:
         return []
 
+def validate_category(category, allowed_categories):
+    if category not in allowed_categories:
+        return {
+            "results": [],
+            "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+            "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
+        }
+
+    return None
+
+
+def validate_tags(category, tags, allowed_categories):
+    category_validation_error = validate_category(category, allowed_categories)
+    if category_validation_error:
+        return category_validation_error
+
+    if not tags:
+        return {
+            "results": [],
+            "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+            "error_message": f"{category} translated to no searchable OSM tags."
+        }
+
+    return None
+
+
 # For certain things, we might need two-step searching: one call to
 # return list of possible tags, and another to return the actual
 # results. This will prevent the model from hallucinating. Maybe also
@@ -1642,13 +1668,9 @@ class Tools:
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = store_category_to_tags(category)
-
-        if not tags:
-            return {
-                "results": [],
-                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
-            }
+        validation_error = validate_tags(category, tags, allowed_categories)
+        if validation_error:
+            return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
@@ -1669,12 +1691,9 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = recreation_to_tags(category)
 
-        if not tags:
-            return {
-                "results": [],
-                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
-            }
+        validation_error = validate_tags(category, tags, allowed_categories)
+        if validation_error:
+            return validation_error
 
         radius = 4000
         limit = 5
@@ -1707,12 +1726,9 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = food_category_to_tags(category)
 
-        if not tags:
-            return {
-                "results": [],
-                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
-            }
+        validation_error = validate_tags(category, tags, allowed_categories)
+        if validation_error:
+            return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
@@ -1733,12 +1749,9 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = travel_category_to_tags(category)
 
-        if not tags:
-            return {
-                "results": [],
-                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
-            }
+        validation_error = validate_tags(category, tags, allowed_categories)
+        if validation_error:
+            return validation_error
 
         radius = 4000
         limit = 5
@@ -1773,12 +1786,9 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = healthcare_category_to_tags(category)
 
-        if not tags:
-            return {
-                "results": [],
-                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
-            }
+        validation_error = validate_tags(category, tags, allowed_categories)
+        if validation_error:
+            return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
@@ -1814,24 +1824,45 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = education_category_to_tags(category)
 
-        if not tags:
-            return {
-                "results": [],
-                "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-                "error_message": f"{category} is not a valid category. Must be one of: {', '.join(allowed_categories)}"
-            }
+        validation_error = validate_tags(category, tags, allowed_categories)
+        if validation_error:
+            return validation_error
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
-    async def find_fuel_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+    async def find_fuel_or_charging_by_category_near_place(
+            self, place: str, category: str, fuel_type: str, ev_charger_type: str, setting: str, __user__: dict, __event_emitter__
+    ) -> str:
         """
-        Finds gas stations, petrol stations, and fuel stations near a given place or address.
+        Finds gas stations, petrol stations, fuel stations, or EV fast chargers near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
+        Does not find slow (regular) EV chargers.
+        The fuel_type parameter MUST be "not_applicable" when searching for EV chargers.
+        The ev_charger_type parameter MUST be "not_applicable" when searching for gas/petrol stations.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :param category: Category to search for. Must be one of "gas_or_petrol", "ev_fast_charging".
+        :param fuel_type: Must be one of "petrol", "diesel", "not_applicable", or "all" (default).
+        :param ev_charger_type: Must be one of "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", "not_applicable", or "all" (default).
         :return: A list of nearby fueling stations, if found.
         """
+        allowed_categories = ["gas_or_petrol", "ev_fast_charging"]
+        user_valves = __user__["valves"] if "valves" in __user__ else None
+        validation_error = validate_category(category, allowed_categories)
+
+        if validation_error:
+            return validation_error
+
+        if category == "gas_or_petrol":
+            print(f"[OSM] WARN: Currently ignoring fuel type parameter (was {fuel_type}")
+            return await self._find_fuel_near_place(__user__, place, setting, __event_emitter__)
+        elif category == "ev_fast_charging":
+            return await self._find_ev_fast_chargers_near_place_with_type(
+                __user__, place, ev_charger_type, setting, __event_emitter__
+            )
+
+    async def _find_fuel_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = ["amenity=fuel"]
@@ -1839,24 +1870,13 @@ class Tools:
                                    setting=setting, radius=10000, place=place, tags=tags,
                                    event_emitter=__event_emitter__)
 
-    async def find_ev_fast_chargers_near_place_with_type(
+    async def _find_ev_fast_chargers_near_place_with_type(
             self, __user__: dict,
             place: str,
             charger_type: str,
             setting: str,
             __event_emitter__
     ) -> str:
-        """
-        Finds EV (electric vehicle) DC fast chargers near a given place or address (22 kW+).
-        Does NOT find regular/slow chargers (3 kW - 11 kW) that use AC.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        The charger_type parameter can be used to constrain the search to specific charger types.
-        By default, search for all charger types unless user asks for specific types.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param charger_type: Must be "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", or "all" (default).
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby fueling stations, if found.
-        """
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         charger_type = charger_type.lower().replace('"', "").replace("'", "")
