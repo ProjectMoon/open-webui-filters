@@ -1461,6 +1461,9 @@ def travel_category_to_tags(travel_type: str) -> List[str]:
         return ["amenity=bicycle_rental", "amenity=bicycle_library", "service:bicycle:rental=yes"]
     elif travel_type == "car_rentals":
         return ["amenity=car_rental", "car:rental=yes", "rental=car", "car_rental=yes"]
+    elif travel_type == "public_transport":
+        return ["highway=bus_stop", "amenity=bus_station", "railway=station", "railway=halt",
+                "railway=tram_stop", "station=subway", "amenity=ferry_terminal", "public_transport=station"]
 
 # For certain things, we might need two-step searching: one call to
 # return list of possible tags, and another to return the actual
@@ -1675,7 +1678,7 @@ class Tools:
         If it is unclear what category of eatery the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of store to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
+        :param category: Category of eateries to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
         """
         allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
         setting = normalize_setting(setting)
@@ -1696,14 +1699,14 @@ class Tools:
         self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
     ) -> str:
         """
-        Find tourist attractions, accommodation, bike rentals, or car rentals on OpenStreetMap.
+        Find tourist attractions, accommodation, public transport, bike rentals, or car rentals on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category of eatery the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of travel info to search for. Must be one of "tourist_attractions", "accommodation", "bike_rentals", "car_rentals".
+        :param category: Category of travel info to search for. Must be one of "tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport".
         """
-        allowed_categories = ["tourist_attractions", "accommodation", "bike_rentals", "car_rentals"]
+        allowed_categories = ["tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags = travel_category_to_tags(category)
@@ -1725,6 +1728,8 @@ class Tools:
             limit = 10
         elif category == "accommodation":
             radius = 10000
+        elif category == "public_transport":
+            limit = 10
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
                                    limit=limit, radius=radius, setting=setting, place=place, tags=tags,
@@ -1788,24 +1793,6 @@ class Tools:
         user_valves = __user__["valves"] if "valves" in __user__ else None
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="libraries",
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
-
-    async def find_public_transport_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-        """
-        Finds public transportation stops on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :return: A list of nearby public transportation stops, if found.
-        """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags = ["highway=bus_stop", "amenity=bus_station",
-                "railway=station", "railway=halt", "railway=tram_stop",
-                "station=subway", "amenity=ferry_terminal",
-                "public_transport=station"]
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="public transport",
-                                   setting=setting, limit=10, place=place, tags=tags,
-                                   event_emitter=__event_emitter__)
 
     async def find_doctor_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
         """
