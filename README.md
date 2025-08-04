@@ -14,14 +14,10 @@ So far:
 
  - **Checkpoint Summarization Filter:** A work-in-progress replacement
    for the narrative memory filter for more generalized use cases.
- - **GPU Scaling Filter:** Reduce number of GPU layers in use if Ollama
-   crashes due to running out of VRAM. Deprecated.
  - **Output Sanitization Filter:** Remove words, phrases, or
    characters from the start of model replies.
  - **OpenStreetMap Tool:** Tool for querying OpenStreetMap to look up
    address details and nearby points of interest.
- - **Collapsible Thought Filter:** Hide LLM reasoning/thinking in a
-   collapisble block.
 
 ## Checkpoint Summarization Filter
 
@@ -95,26 +91,6 @@ There are some limitations to be aware of:
    first summarization is detected.
  - The filter only loads the most recent summary, and thus the AI
    might "forget" much older information.
-
-## GPU Scaling Filter
-
-_Deprecated. Use the setting in OpenWebUI chat controls._
-
-This is a simple filter that reduces the number of GPU layers in use
-by Ollama when it detects that Ollama has crashed (via empty response
-coming in to OpenWebUI). Right now, the logic is very basic, just
-using static numbers to reduce GPU layer counts. It doesn't take into
-account the number of layers in models or dynamically monitor VRAM
-use.
-
-There are three settings:
-
- - **Initial Reduction:** Number of layers to immediately set when an
-   Ollama crash is detected. Defaults to 20.
- - **Scaling Step:** Number of layers to reduce by on subsequent crashes
-   (down to a minimum of 0, i.e. 100% CPU inference). Defaults to 5.
- - **Show Status:** Whether or not to inform the user that the
-   conversation is running slower due to GPU layer downscaling.
 
 ## Output Sanitization Filter
 
@@ -193,27 +169,6 @@ location. This can be accomplished with the following steps:
  - OpenWebUI will automatically substitute the GPS coordinates
    reported by the browser into the model's system prompt on every
    message.
-
-# Collapsible Thought Filter
-
-Hides model reasoning/thinking processes in a collapisble block in the
-UI response, similar to OpenAI o1 replies in ChatGPT. Designed to be
-used with [Reflection 70b](https://ollama.com/library/reflection) and
-similar models.
-
-Current settings:
-
- - Priority: what order to run this filter in.
- - Thought Title: the title of the collapsed thought block.
- - Thought Tag: The XML tag that contains the model's reasoning.
- - Output Tag: The XML tag that contains the model's final output.
- - Use Thoughts As Context: Whether or not to send LLM reasoning text
-   as context. Disabled by default because it drastically increases
-   token use.
-
-**Note on XML tag settings:** These should be tags WITHOUT the `<>`.
-If you customize the tag setting, make sure your setting is just
-`mytag` and not `<mytag>` or anything else.
 
 # License
 
