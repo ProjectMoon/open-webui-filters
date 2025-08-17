@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 3.1.1
+version: 3.1.2
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -1880,13 +1880,12 @@ class Tools:
         """
         Finds gas stations, petrol stations, fuel stations, or EV fast chargers near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        Does not find slow (regular) EV chargers. The fuel_type parameter MUST be "not_applicable" when searching for EV chargers.
-        The ev_charger_type parameter MUST be "not_applicable" when searching for gas/petrol stations.
+        Does not find slow (regular) EV chargers.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: must be "urban", "suburban", or "rural". Controls search radius.
         :param category: Category to search for. Must be one of "gas_or_petrol", "ev_fast_charging".
-        :param fuel_type: Must be one of "petrol", "diesel", "not_applicable" (if searching for EV chargers), or "all" (default).
-        :param ev_charger_type: Must be one of "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", "not_applicable" (if searching for fuel), or "all" (default).
+        :param fuel_type: Must be one of "petrol", "diesel", or "all" (default). Should be null if searching for EV chargers.
+        :param ev_charger_type: Must be one of "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", or "all" (default). Should be null if searching for gas.
         :return: A list of nearby fueling stations, if found.
         """
         # subfunction to find fuel

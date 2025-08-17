@@ -8,6 +8,10 @@
  - Initial release.
 
 # OpenStreetMap Tool
+
+**3.1.2:**
+ - Minor improvements for GPT-OSS 20b when searching for EV chargers.
+
 **3.1.1:**
  - Tool will not search for cannabis stores when looking for cafes and
    bakeries.
