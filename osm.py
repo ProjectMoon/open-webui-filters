@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 3.1.2
+version: 3.1.3
 license: AGPL-3.0+
 required_open_webui_version: 0.4.3
 requirements: openrouteservice, pygments
@@ -1634,6 +1634,19 @@ class Tools:
         print(f"Searching for '{store_or_business_name}' near {latitude},{longitude}")
         query = f"{store_or_business_name} {latitude},{longitude}"
         return await self.find_specific_place(query, __event_emitter__)
+
+    async def resolve_coordinates(self, latitude: float, longitude: float, __event_emitter__) -> str:
+        """
+        Resolves GPS coordinates to a human-readable location such
+        as an address or place name. Use this to convert GPS
+        coordinates before searching if you need to figure out urban,
+        suburban, or rural setting.
+        :param latitude: The latitude portion of the GPS coordinate.
+        :param longitude: The longitude portion of the GPS coordinate.
+        :return: Reverse geocoded location or address information.
+        """
+        print(f"Reverse geocoding {latitude},{longitude}")
+        return await self.find_specific_place(f"{latitude},{longitude}", __event_emitter__)
 
     async def find_specific_place(self, address_or_place: str, __event_emitter__) -> str:
         """

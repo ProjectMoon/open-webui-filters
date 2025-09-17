@@ -9,6 +9,11 @@
 
 # OpenStreetMap Tool
 
+**3.1.3:**
+ - Provide a specific function to guide LLMs in converting GPS
+   coordinates to human-readable place names. Useful for `map` prompt
+   input type.
+
 **3.1.2:**
  - Minor improvements for GPT-OSS 20b when searching for EV chargers.
 
