@@ -11,6 +11,7 @@ import itertools
 import json
 import math
 import requests
+import uuid
 
 from pygments import highlight
 from pygments.lexers import JsonLexer
@@ -23,6 +24,10 @@ from urllib.parse import urljoin
 from operator import itemgetter
 from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
+
+#####################################################
+# Citation CSS
+#####################################################
 
 # Yoinked from the OpenWebUI CSS
 FONTS = ",".join([
@@ -46,6 +51,36 @@ html {{ font-family: {FONTS}; }}
 """
 
 HIGHLIGHT_CSS = HtmlFormatter().get_style_defs('.highlight')
+
+#####################################################
+# Leaflet Integration
+#####################################################
+
+LEAFLET_CSS = """
+<link
+  rel="stylesheet" crossorigin=""
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+/>
+"""
+
+LEAFLET_JS = """
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""></script>
+"""
+
+LEAFLET_TILES = """
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+"""
+
+#####################################################
+# Useful Constants
+#####################################################
 
 NOMINATIM_LOOKUP_TYPES = {
     "node": "N",
@@ -171,8 +206,46 @@ def detailed_instructions(tag_type_str: str) -> str:
         f"\n\n{NO_CONFUSION}\n\n"
         "Remember that the CLOSEST result is first, and you should use "
         "that result first.\n\n"
-        "**ALWAYS SAY THE CLOSEST RESULT FIRST!**"
+        "**ALWAYS SAY THE CLOSEST RESULT FIRST!**\n\n"
+        "**Follow the `show_map_instructions` field to render a map for the user!**"
     )
+
+def leaflet_instructions(bbox, friendly_things):
+    markers = []
+    for num, friendly_thing in enumerate(friendly_things):
+        thing = friendly_thing["raw_osm_json"]
+        lat, lon = thing['lat'], thing['lat']
+        name = thing.get('tags', {}).get('name', 'unknown name')
+        addr = thing.get('address', 'unknown address')
+        marker = f"var marker{num} = L.marker([{lat}, {lon}]).addTo(map);"
+        popup = f"marker{num}.bindPopup(\"{name}<br>{addr}\");"
+        markers.append(f"{marker}{popup}")
+
+    dom_id = str(uuid.uuid4())
+    map = f"var map = L.map('{dom_id}').setView([{lat}, {lon}], 13);"
+    tiles = LEAFLET_TILES
+
+    corner1 = f"[{bbox['minlat']}, {bbox['minlon']}]"
+    corner2 = f"[{bbox['maxlat']}, {bbox['maxlon']}]"
+    bounds = f"map.fitBounds([{corner1}, {corner2}]);"
+    marker_list = "\n".join(markers) + "\n"
+
+    size = 'style="width: 100%; height: 180px;"'
+    div = f"<div id=\"{dom_id}\" {size}></div>"
+
+    css = LEAFLET_CSS
+    js = LEAFLET_JS
+    script = f"<script type=\"text/javascript\">{map}{tiles}{marker_list}{bounds}</script>"
+
+    instructions = (
+        "Render the following HTML code in a <details></details> element, "
+        "with <summary>Map</summary>. "
+        "Render them in an markdown HTML code block."
+    )
+    html =  f"{css}{js}{div}{script}"
+
+    return f"{instructions}\n\n```html\n{html}\n```"
+
 
 def simple_instructions(tag_type_str: str) -> str:
     """
@@ -767,7 +840,7 @@ class OsmSearcher:
             },
         })
 
-    def create_result_document(self, thing) -> Optional[dict]:
+    def create_citation_document(self, thing) -> Optional[dict]:
         original_thing = thing
         thing = parse_and_validate_thing(thing)
 
@@ -786,6 +859,11 @@ class OsmSearcher:
         json_data = pretty_print_thing_json(original_thing)
         addr = f"at {thing['address']}" if thing['address'] != 'unknown' else 'nearby'
 
+        # Emit citation with a link to the POI's website, if it
+        # exists. Otherwise, fall back to the OSM link.
+        thing_website = get_or_none(original_thing['tags'], "website")
+        website = thing_website if thing_website is not None else osm_link
+
         document = (f"<style>{HIGHLIGHT_CSS}</style>"
                     f"<style>{FONT_CSS}</style>"
                     f"<div>"
@@ -799,26 +877,27 @@ class OsmSearcher:
                     f"{json_data}"
                     f"</div>")
 
-        return { "source_name": source_name, "document": document, "osm_link": osm_link }
+        return { "source_name": source_name, "document": document, "osm_link": osm_link, "website": website }
 
     async def emit_result_citation(self, thing):
         if not self.event_emitter or not self.valves.status_indicators:
             return
 
-        converted = self.create_result_document(thing)
+        converted = self.create_citation_document(thing)
         if not converted:
             return
 
         source_name = converted["source_name"]
         document = converted["document"]
         osm_link = converted["osm_link"]
+        website = converted["website"]
 
         await self.event_emitter({
             "type": "source",
             "data": {
                 "document": [document],
                 "metadata": [{"source": source_name, "html": True }],
-                "source": {"name": source_name, "url": osm_link},
+                "source": {"name": website, "url": website},
             }
         })
 
@@ -1209,8 +1288,12 @@ class OsmSearcher:
             else:
                 result_instructions = "No results found at all. Tell the user there are no results."
 
+            leaflet_results = search_results if search_results is not None else []
+            map_instructions = leaflet_instructions(bbox, leaflet_results)
+
             resp = {
                 "instructions": result_instructions,
+                "show_map_instructions": map_instructions,
                 "results": search_results if search_results else []
             }
 
@@ -2004,3 +2087,32 @@ class Tools:
             "**IMPORTANT**: Tell the user to be specific in their "
             "query in their next message, so you can call the right function!")
         return resp
+
+    def show_map(self, __user__):
+        """
+        Fetch HTML and JavaScript for rendering a map.
+        """
+        return """
+```html
+        <link
+  rel="stylesheet" crossorigin=""
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+/>
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""></script>
+<div id="2d19dd00-d40a-4dee-a258-38550c610a08" style="width: 100%; height: 180px;"></div><script type="text/javascript">var map = L.map('2d19dd00-d40a-4dee-a258-38550c610a08').setView([52.3720405, 4.6247763], 13);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+var marker0 = L.marker([52.3693272, 4.6139443]).addTo(map);marker0.bindPopup("Vomar<br>Stephensonstraat 50, Haarlem 2014KD");
+var marker1 = L.marker([52.3783555, 4.6177828]).addTo(map);marker1.bindPopup("ALDI<br>Menno Simonszplein 3, Haarlem 2014SC");
+var marker2 = L.marker([52.3776085, 4.6170875]).addTo(map);marker2.bindPopup("Albert Heijn<br>Menno Simonszplein 6, Haarlem 2014SC");
+var marker3 = L.marker([52.3803653, 4.6225079]).addTo(map);marker3.bindPopup("DekaMarkt<br>Oranjeboomstraat 126, Haarlem 2013WC");
+var marker4 = L.marker([52.3720405, 4.6247763]).addTo(map);marker4.bindPopup("De Vitaminebron<br>Wagenweg 76, Haarlem 2012NH");map.fitBounds([[52.3738509, 4.6174750], [52.3739509, 4.6175750]])
+</script>
+```
+        """
