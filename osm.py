@@ -25,6 +25,191 @@ from operator import itemgetter
 from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 
+##################
+# LEAFLET
+##################
+LEAFLET_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Results</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+            padding: 12px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: #6c757d;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+
+        h2 {
+            font-size: 1.3rem;
+            color: #34495e;
+            margin: 20px 0 10px;
+            font-weight: 600;
+        }
+
+        #map {
+            height: 400px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border: 1px solid #ddd;
+        }
+
+        #poi-list {
+            list-style-type: none;
+            padding: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 8px;
+        }
+
+        #poi-list li {
+            padding: 10px 12px;
+            margin: 0;
+            background-color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+            border: 1px solid #e9ecef;
+            font-weight: 600;
+            color: #495057;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #poi-list li:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
+            background-color: #f8f9fa;
+            color: #2c3e50;
+        }
+
+        #poi-list li.active {
+            background-color: #3498db;
+            color: white;
+            box-shadow: 0 3px 8px rgba(52, 152, 219, 0.2);
+        }
+
+        .poi-description {
+            font-size: 0.8rem;
+            color: #6c757d;
+            margin-top: 4px;
+            font-weight: 400;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Search Results</h1>
+        <p class="subtitle">Data from OpenStreetMap</p>
+
+        <div id="map"></div>
+
+        <h2>List</h2>
+        <ul id="poi-list"></ul>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="text/javascript">
+        // Function to create the map
+        function createMap(poiData) {
+            // Create map centered on first POI
+            const map = L.map('map').setView(poiData[0].coords, 12);
+
+            // Add OpenStreetMap tiles
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+
+            // Store markers and popup references
+            const markers = [];
+
+            // Add markers to map and create list items dynamically
+            poiData.forEach((poi, index) => {
+                const marker = L.marker(poi.coords).addTo(map);
+                marker.bindPopup(`<h3>${poi.name}</h3><p>Coordinates: ${poi.coords[0].toFixed(4)}, ${poi.coords[1].toFixed(4)}</p>`);
+                markers.push(marker);
+
+                // Create list item dynamically
+                const listItem = document.createElement('li');
+                listItem.innerHTML = `
+                    <span>${poi.name}</span>
+                    <span class="poi-description">${poi.description}</span>
+                `;
+                listItem.onclick = () => focusOnMarker(index, map, markers);
+                listItem.classList.add('poi-item');
+
+                // Add to list
+                document.getElementById('poi-list').appendChild(listItem);
+            });
+
+            return { map, markers };
+        }
+
+        // Function to focus on a specific marker
+        function focusOnMarker(index, map, markers) {
+            const marker = markers[index];
+
+            // Fit map to show all markers with reduced padding
+            const bounds = poiData.map(poi => L.latLng(poi.coords));
+            map.fitBounds(bounds, { padding: [15, 15], maxZoom: 13 });
+
+            // Open popup for selected marker
+            marker.openPopup();
+
+            // Update active state in list
+            updateActiveListItem(index);
+        }
+
+        // Function to update active list item
+        function updateActiveListItem(index) {
+            const listItems = document.querySelectorAll('#poi-list li');
+            listItems.forEach((item, i) => {
+                if (i === index) {
+                    item.classList.add('active');
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+        }
+    </script>
+    {LEAFLET_INIT}
+</body>
+</html>
+"""
+
 #####################################################
 # Citation CSS
 #####################################################
@@ -209,43 +394,6 @@ def detailed_instructions(tag_type_str: str) -> str:
         "**ALWAYS SAY THE CLOSEST RESULT FIRST!**\n\n"
         "**Follow the `show_map_instructions` field to render a map for the user!**"
     )
-
-def leaflet_instructions(bbox, friendly_things):
-    markers = []
-    for num, friendly_thing in enumerate(friendly_things):
-        thing = friendly_thing["raw_osm_json"]
-        lat, lon = thing['lat'], thing['lat']
-        name = thing.get('tags', {}).get('name', 'unknown name')
-        addr = thing.get('address', 'unknown address')
-        marker = f"var marker{num} = L.marker([{lat}, {lon}]).addTo(map);"
-        popup = f"marker{num}.bindPopup(\"{name}<br>{addr}\");"
-        markers.append(f"{marker}{popup}")
-
-    dom_id = str(uuid.uuid4())
-    map = f"var map = L.map('{dom_id}').setView([{lat}, {lon}], 13);"
-    tiles = LEAFLET_TILES
-
-    corner1 = f"[{bbox['minlat']}, {bbox['minlon']}]"
-    corner2 = f"[{bbox['maxlat']}, {bbox['maxlon']}]"
-    bounds = f"map.fitBounds([{corner1}, {corner2}]);"
-    marker_list = "\n".join(markers) + "\n"
-
-    size = 'style="width: 100%; height: 180px;"'
-    div = f"<div id=\"{dom_id}\" {size}></div>"
-
-    css = LEAFLET_CSS
-    js = LEAFLET_JS
-    script = f"<script type=\"text/javascript\">{map}{tiles}{marker_list}{bounds}</script>"
-
-    instructions = (
-        "Render the following HTML code in a <details></details> element, "
-        "with <summary>Map</summary>. "
-        "Render them in an markdown HTML code block."
-    )
-    html =  f"{css}{js}{div}{script}"
-
-    return f"{instructions}\n\n```html\n{html}\n```"
-
 
 def simple_instructions(tag_type_str: str) -> str:
     """
@@ -1288,12 +1436,8 @@ class OsmSearcher:
             else:
                 result_instructions = "No results found at all. Tell the user there are no results."
 
-            leaflet_results = search_results if search_results is not None else []
-            map_instructions = leaflet_instructions(bbox, leaflet_results)
-
             resp = {
                 "instructions": result_instructions,
-                "show_map_instructions": map_instructions,
                 "results": search_results if search_results else []
             }
 
@@ -1641,6 +1785,11 @@ EV_CHARGER_OSM_SOCKET_TYPES = [
 # restaurants.
 
 class Tools:
+    class POI(BaseModel):
+        name: str = Field(description="Name of the point of interest")
+        coords: List[float] = Field("Two-number list, coordinates of the point of interest [lat, lon]")
+        description: str = Field(description="Description of the point of interest")
+
     class Valves(BaseModel):
         user_agent: str = Field(
             default="", description="Unique user agent to identify your OSM API requests."
@@ -2088,31 +2237,18 @@ class Tools:
             "query in their next message, so you can call the right function!")
         return resp
 
-    def show_map(self, __user__):
+    def show_map(self, points_of_interest: List[POI], __user__):
         """
         Fetch HTML and JavaScript for rendering a map.
+        :param points_of_interest: a list of points of interest.
+        :return: HTML for rendering a map and results.
         """
-        return """
-```html
-        <link
-  rel="stylesheet" crossorigin=""
-  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-/>
-<script
-  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-  crossorigin=""></script>
-<div id="2d19dd00-d40a-4dee-a258-38550c610a08" style="width: 100%; height: 180px;"></div><script type="text/javascript">var map = L.map('2d19dd00-d40a-4dee-a258-38550c610a08').setView([52.3720405, 4.6247763], 13);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-}).addTo(map);
-var marker0 = L.marker([52.3693272, 4.6139443]).addTo(map);marker0.bindPopup("Vomar<br>Stephensonstraat 50, Haarlem 2014KD");
-var marker1 = L.marker([52.3783555, 4.6177828]).addTo(map);marker1.bindPopup("ALDI<br>Menno Simonszplein 3, Haarlem 2014SC");
-var marker2 = L.marker([52.3776085, 4.6170875]).addTo(map);marker2.bindPopup("Albert Heijn<br>Menno Simonszplein 6, Haarlem 2014SC");
-var marker3 = L.marker([52.3803653, 4.6225079]).addTo(map);marker3.bindPopup("DekaMarkt<br>Oranjeboomstraat 126, Haarlem 2013WC");
-var marker4 = L.marker([52.3720405, 4.6247763]).addTo(map);marker4.bindPopup("De Vitaminebron<br>Wagenweg 76, Haarlem 2012NH");map.fitBounds([[52.3738509, 4.6174750], [52.3739509, 4.6175750]])
-</script>
-```
-        """
+        poi_json = json.dumps(points_of_interest)
+        script = f"<script type=text/javascript>createMap({poi_json}); updateActiveListItem(0);</script>"
+        instructions = "Render the HTML in a markdown HTML code block, exactly as presented."
+        html = LEAFLET_HTML.replace("{LEAFLET_INIT}", script)
+
+        return {
+            "instructions": instructions,
+            "html": html
+        }
