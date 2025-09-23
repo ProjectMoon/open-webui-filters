@@ -158,14 +158,21 @@ def navigation_instructions(travel_type) -> str:
         f"the user that it's a **{travel_type}** route."
     )
 
-def detailed_instructions(tag_type_str: str) -> str:
+def detailed_instructions(tag_type_str: str, used_rel: bool) -> str:
     """
     Produce detailed instructions for models good at following
     detailed instructions.
     """
+    if used_rel:
+        rel_inst = (
+            "These are some of the results, but we did not search the entire area! "
+            "Explain to the user that we did not search the entire area! "
+        )
+    else:
+        rel_inst = "These are the results known to be closest to the requested location. "
     return (
         f"These are some of the {tag_type_str} points of interest nearby. "
-        "These are the results known to be closest to the requested location. "
+        f"{rel_inst}"
         "When telling the user about them, make sure to report "
         "all the information (address, contact info, website, etc).\n\n"
         "Use this information to answer the user's query. Prefer closer results "
@@ -185,14 +192,21 @@ def detailed_instructions(tag_type_str: str) -> str:
         f"\n\n{NO_CONFUSION}\n\n"
         "Remember that the CLOSEST result is first, and you should use "
         "that result first.\n\n"
-        "**ALWAYS SAY THE CLOSEST RESULT FIRST!**"
     )
 
-def simple_instructions(tag_type_str: str) -> str:
+def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
     """
     Produce simpler markdown-oriented instructions for models that do
     better with that.
     """
+    if used_rel:
+        rel_inst = (
+            "**Mention that the central point of the town or city that the user is searching in "
+            "was used, and that results may not cover the whole area.**"
+        )
+    else:
+        rel_inst = ""
+
     return (
         f"These are some of the {tag_type_str} points of interest nearby. "
         "These are the results known to be closest to the requested location. "
@@ -208,6 +222,7 @@ def simple_instructions(tag_type_str: str) -> str:
         "say so. Do not make up answers or hallucinate. "
         "Make sure that your results are in the actual location the user is talking about, "
         "and not a place of the same name in a different country."
+        f"{rel_inst}"
     )
 
 def merge_from_nominatim(thing, nominatim_result) -> Optional[dict]:
@@ -935,11 +950,11 @@ class OsmSearcher:
         else:
             return self.valves.instruction_oriented_interpretation
 
-    def get_result_instructions(self, tag_type_str: str) -> str:
+    def get_result_instructions(self, tag_type_str: str, used_rel: bool) -> str:
         if self.use_detailed_interpretation_mode():
-            return detailed_instructions(tag_type_str)
+            return detailed_instructions(tag_type_str, used_rel)
         else:
-            return simple_instructions(tag_type_str)
+            return simple_instructions(tag_type_str, used_rel)
 
     @staticmethod
     def group_tags(tags):
@@ -1209,6 +1224,39 @@ class OsmSearcher:
 
         return [things_nearby, sort_method]
 
+    def get_bbox(self, nominatim_result):
+        rel_types = ["village", "town", "city", "suburb"]
+
+        # relations can have a lat/lon defined on them. useful for or
+        # other settlements. only do this if the nominatim result is a
+        # relation that defines an entire settled area.
+        # see also OSM admin_level
+        rel_osm_type = nominatim_result.get("osm_type", "node") == "relation"
+        rel_type = nominatim_result.get("type", "n/a") == "administrative"
+        rel_class = nominatim_result.get("class", None) == "boundary"
+        rel_addr_type = nominatim_result.get("addresstype", None) in rel_types
+        use_rel_bbox = rel_osm_type and rel_type and rel_class and rel_addr_type
+
+        if use_rel_bbox:
+            rel_lat = nominatim_result.get("lat", None)
+            rel_lon = nominatim_result.get("lon", None)
+            if rel_lat and rel_lon:
+                print("[OSM] Requested search area is settled urban zone. Using lat/lon of OSM relation.")
+                return True, {
+                    'minlat': rel_lat,
+                    'maxlat': rel_lat,
+                    'minlon': rel_lon,
+                    'maxlon': rel_lon
+                }
+
+        # fall back to nominatim bounding box for everything else.
+        return False, {
+            'minlat': nominatim_result['boundingbox'][0],
+            'maxlat': nominatim_result['boundingbox'][1],
+            'minlon': nominatim_result['boundingbox'][2],
+            'maxlon': nominatim_result['boundingbox'][3]
+        }
+
     async def search_nearby(
             self, place: str, tags: List[str], limit: int=5, radius: int=4000,
             category: str="POIs", not_tag_groups={}
@@ -1229,6 +1277,8 @@ class OsmSearcher:
         try:
             nominatim_result = nominatim_result[0]
 
+            print(json.dumps(nominatim_result))
+
             # display friendlier searching message if possible
             if 'display_name' in nominatim_result:
                 place_display_name = ",".join(nominatim_result['display_name'].split(",")[:3])
@@ -1244,12 +1294,7 @@ class OsmSearcher:
 
             await self.event_searching(category, place_display_name, done=False, tags=tags)
 
-            bbox = {
-                'minlat': nominatim_result['boundingbox'][0],
-                'maxlat': nominatim_result['boundingbox'][1],
-                'minlon': nominatim_result['boundingbox'][2],
-                'maxlon': nominatim_result['boundingbox'][3]
-            }
+            used_rel, bbox = self.get_bbox(nominatim_result)
 
             print(f"[OSM] Searching for {category} near {place_display_name}")
             things_nearby, sort_method = await self.get_things_nearby(nominatim_result, place, tags,
@@ -1267,7 +1312,7 @@ class OsmSearcher:
             # actually have something.
             search_results = convert_and_validate_results(place, things_nearby, sort_message=sort_method)
             if search_results:
-                result_instructions = self.get_result_instructions(tag_type_str)
+                result_instructions = self.get_result_instructions(tag_type_str, used_rel)
             else:
                 result_instructions = "No results found at all. Tell the user there are no results."
 
