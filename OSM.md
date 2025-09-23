@@ -76,7 +76,7 @@ The tool is regularly tested with these models at quants ranging from `Q3_K_XL` 
 ## 🛠️ Configuration Requirements
 
 ### ⚠️ Mandatory Settings
-- **User-Agent**: A custom identifier for API requests (e.g., `"OSM-Tool/1.0 (https://agnos.is)"`)
+- **User-Agent**: A custom identifier for API requests (e.g., `"OSM-Tool/1.0 (https://example.com)"`)
 - **From Header**: A valid email address (e.g., `"user@example.com"`) for API compliance
 
 ### 📡 API Endpoints
