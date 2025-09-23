@@ -1614,7 +1614,9 @@ def food_category_to_tags(food_type: str) -> Tuple[List[str], dict]:
         # cannabis stores are sometimes tagged with amenity=cafe.
         return ["shop=bakery", "amenity=cafe"], { "shop": [ "cannabis" ] }
     elif food_type == "bars_and_pubs":
-        return ["amenity=bar", "amenity=pub", "amenity=biergarten"], {}
+        # the search for amenity=pub can also wind up finding
+        # public_bookcases. we don't want that.
+        return ["amenity=bar", "amenity=pub", "amenity=biergarten"], { "amenity": [ "public_bookcase" ] }
     else:
         return [], {}
 
