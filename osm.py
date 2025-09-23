@@ -25,191 +25,6 @@ from operator import itemgetter
 from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 
-##################
-# LEAFLET
-##################
-LEAFLET_HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Search Results</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
-            color: #333;
-            line-height: 1.6;
-            padding: 12px;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        h1 {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #2c3e50;
-            text-align: center;
-            margin-bottom: 5px;
-        }
-
-        .subtitle {
-            font-size: 0.9rem;
-            color: #6c757d;
-            text-align: center;
-            margin-bottom: 15px;
-        }
-
-        h2 {
-            font-size: 1.3rem;
-            color: #34495e;
-            margin: 20px 0 10px;
-            font-weight: 600;
-        }
-
-        #map {
-            height: 400px;
-            margin-bottom: 15px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            border: 1px solid #ddd;
-        }
-
-        #poi-list {
-            list-style-type: none;
-            padding: 0;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 8px;
-        }
-
-        #poi-list li {
-            padding: 10px 12px;
-            margin: 0;
-            background-color: white;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-            border: 1px solid #e9ecef;
-            font-weight: 600;
-            color: #495057;
-            display: flex;
-            flex-direction: column;
-        }
-
-        #poi-list li:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
-            background-color: #f8f9fa;
-            color: #2c3e50;
-        }
-
-        #poi-list li.active {
-            background-color: #3498db;
-            color: white;
-            box-shadow: 0 3px 8px rgba(52, 152, 219, 0.2);
-        }
-
-        .poi-description {
-            font-size: 0.8rem;
-            color: #6c757d;
-            margin-top: 4px;
-            font-weight: 400;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Search Results</h1>
-        <p class="subtitle">Data from OpenStreetMap</p>
-
-        <div id="map"></div>
-
-        <h2>List</h2>
-        <ul id="poi-list"></ul>
-    </div>
-
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script type="text/javascript">
-        // Function to create the map
-        function createMap(poiData) {
-            // Create map centered on first POI
-            const map = L.map('map').setView(poiData[0].coords, 12);
-
-            // Add OpenStreetMap tiles
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            }).addTo(map);
-
-            // Store markers and popup references
-            const markers = [];
-
-            // Add markers to map and create list items dynamically
-            poiData.forEach((poi, index) => {
-                const marker = L.marker(poi.coords).addTo(map);
-                marker.bindPopup(`<h3>${poi.name}</h3><p>Coordinates: ${poi.coords[0].toFixed(4)}, ${poi.coords[1].toFixed(4)}</p>`);
-                markers.push(marker);
-
-                // Create list item dynamically
-                const listItem = document.createElement('li');
-                listItem.innerHTML = `
-                    <span>${poi.name}</span>
-                    <span class="poi-description">${poi.description}</span>
-                `;
-                listItem.onclick = () => focusOnMarker(index, map, markers);
-                listItem.classList.add('poi-item');
-
-                // Add to list
-                document.getElementById('poi-list').appendChild(listItem);
-            });
-
-            return { map, markers };
-        }
-
-        // Function to focus on a specific marker
-        function focusOnMarker(index, map, markers) {
-            const marker = markers[index];
-
-            // Fit map to show all markers with reduced padding
-            const bounds = poiData.map(poi => L.latLng(poi.coords));
-            map.fitBounds(bounds, { padding: [15, 15], maxZoom: 13 });
-
-            // Open popup for selected marker
-            marker.openPopup();
-
-            // Update active state in list
-            updateActiveListItem(index);
-        }
-
-        // Function to update active list item
-        function updateActiveListItem(index) {
-            const listItems = document.querySelectorAll('#poi-list li');
-            listItems.forEach((item, i) => {
-                if (i === index) {
-                    item.classList.add('active');
-                } else {
-                    item.classList.remove('active');
-                }
-            });
-        }
-    </script>
-    {LEAFLET_INIT}
-</body>
-</html>
-"""
-
 #####################################################
 # Citation CSS
 #####################################################
@@ -236,32 +51,6 @@ html {{ font-family: {FONTS}; }}
 """
 
 HIGHLIGHT_CSS = HtmlFormatter().get_style_defs('.highlight')
-
-#####################################################
-# Leaflet Integration
-#####################################################
-
-LEAFLET_CSS = """
-<link
-  rel="stylesheet" crossorigin=""
-  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-/>
-"""
-
-LEAFLET_JS = """
-<script
-  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-  crossorigin=""></script>
-"""
-
-LEAFLET_TILES = """
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-}).addTo(map);
-"""
 
 #####################################################
 # Useful Constants
@@ -327,7 +116,12 @@ NO_CONFUSION = ("**IMPORTANT!:** Check that the results match the location "
 # with correct GPS coords but incorrect URLs.
 EXAMPLE_OSM_LINK = "https://www.openstreetmap.org/#map=19/<lat>/<lon>"
 OSM_LINK_INSTRUCTIONS = (
-    "Make friendly human-readable OpenStreetMap links when possible, "
+    "Always use inline citations in the format "
+    "[id], using the citation_id of each source. The citation ID must be in "
+    "the form of [<citation_id>]. For example, if the citation_id ID is 123456789, "
+    "print [123456789]. Do NOT print [id:123456789]. That will not work. "
+    "Always use inline citations for information relating to a result. "
+    "When necessary, make friendly human-readable OpenStreetMap links "
     "by using the latitude and longitude of the amenities: "
     f"{EXAMPLE_OSM_LINK}\n\n"
 )
@@ -391,8 +185,7 @@ def detailed_instructions(tag_type_str: str) -> str:
         f"\n\n{NO_CONFUSION}\n\n"
         "Remember that the CLOSEST result is first, and you should use "
         "that result first.\n\n"
-        "**ALWAYS SAY THE CLOSEST RESULT FIRST!**\n\n"
-        "**Follow the `show_map_instructions` field to render a map for the user!**"
+        "**ALWAYS SAY THE CLOSEST RESULT FIRST!**"
     )
 
 def simple_instructions(tag_type_str: str) -> str:
@@ -928,63 +721,91 @@ class OsmSearcher:
             'From': self.valves.from_header
         }
 
-    async def event_resolving(self, done: bool=False, message: Optional[str]=None):
+    async def event_resolving(self, done: bool=False, message: Optional[str]=None, items=[]):
         if not self.event_emitter or not self.valves.status_indicators:
             return
 
-        message = f" {message}" if message is not None else "..."
+        items = [
+            {
+                "title": get_or_none(item, "display_name"),
+                "link": create_osm_link(item.get('lat', -1), item.get('lon', -1))
+            }
+            for item in items
+        ]
 
         if done:
-            message = "OpenStreetMap: resolution complete."
+            message = "OpenStreetMap: resolution complete"
         else:
+            message = f" {message}" if message is not None else "..."
             message = f"OpenStreetMap: resolving{message}"
 
         await self.event_emitter({
             "type": "status",
             "data": {
+                "action": "web_search",
                 "status": "in_progress",
+                "items": items if items else None,
                 "description": message,
-                "done": done,
-            },
-        })
-
-    async def event_fetching(self, done: bool=False, message="fetching additional info"):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "status": "in_progress",
-                "description": f"OpenStreetMap: {message}",
                 "done": done,
             },
         })
 
     async def event_searching(
             self, category: str, place: str,
-            status: str="in_progress", done: bool=False
+            status: str="in_progress", done: bool=False,
+            tags=[]
     ):
         if not self.event_emitter or not self.valves.status_indicators:
             return
+
+        query = f"{category.capitalize()} POIs near {place}"
 
         await self.event_emitter({
             "type": "status",
             "data": {
                 "status": status,
+                "action": "web_search_queries_generated",
+                "queries": [query],
                 "description": f"OpenStreetMap: searching for {category} near {place}",
                 "done": done,
             },
         })
 
-    async def event_search_complete(self, category: str, place: str, num_results: int):
+    async def event_search_complete(self, category: str, place: str, items=[]):
         if not self.event_emitter or not self.valves.status_indicators:
             return
+
+        num_results = len(items)
+        citation_items = []
+
+        for item in items:
+            name = get_or_none(item.get('tags', {}), "name", "brand")
+            addr = get_or_none(item.get('tags', {}), "addr:street", "addr:city")
+            addr = f"({addr})" if addr else ""
+            title = f"{name} {addr}".strip()
+
+            citation_items.append({
+                "title": title,
+                "link": create_osm_link(item.get('lat', -1), item.get('lon', -1))
+            })
 
         await self.event_emitter({
             "type": "status",
             "data": {
-                "status": "complete",
+                "action": "web_search",
+                "status": "in_progress",
+                "items": citation_items if citation_items else None,
+                "description": f"OpenStreetMap: found {num_results} '{category}' results",
+                "done": True,
+            },
+        })
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "action": "sources_retrieved",
+                "status": "in_progress",
+                "count": num_results,
                 "description": f"OpenStreetMap: found {num_results} '{category}' results",
                 "done": True,
             },
@@ -1002,6 +823,7 @@ class OsmSearcher:
         else:
             street = get_or_none(original_thing['tags'], "addr:street")
 
+        id = thing.get('id', None)
         street_name = street if street is not None else ""
         source_name = f"{thing['name']} {street_name}"
         lat, lon = thing['lat'], thing['lon']
@@ -1011,7 +833,7 @@ class OsmSearcher:
 
         # Emit citation with a link to the POI's website, if it
         # exists. Otherwise, fall back to the OSM link.
-        thing_website = get_or_none(original_thing['tags'], "website")
+        thing_website = get_or_none(original_thing['tags'], "operator:website", "website", "brand:website")
         website = thing_website if thing_website is not None else osm_link
 
         document = (f"<style>{HIGHLIGHT_CSS}</style>"
@@ -1027,7 +849,13 @@ class OsmSearcher:
                     f"{json_data}"
                     f"</div>")
 
-        return { "source_name": source_name, "document": document, "osm_link": osm_link, "website": website }
+        return {
+            "id": id,
+            "source_name": source_name,
+            "document": document,
+            "osm_link": osm_link,
+            "website": website
+        }
 
     async def emit_result_citation(self, thing):
         if not self.event_emitter or not self.valves.status_indicators:
@@ -1138,12 +966,6 @@ class OsmSearcher:
 
 
     async def nominatim_lookup_by_id(self, things, format="json"):
-        if len(things) == 1:
-            event_message="fetching more information for 1 result"
-        else:
-            event_message=f"fetching more information for {len(things)} results"
-
-        await self.event_fetching(done=False, message=event_message)
         updated_things = [] # the things with merged info.
 
         # handle last chunk, which can have nones due to the way
@@ -1172,7 +994,6 @@ class OsmSearcher:
 
         if len(lookups) == 0:
             print("[OSM] Got all Nominatim info from cache!")
-            await self.event_fetching(done=True, message=event_message)
             return updated_things
         else:
             print(f"Looking up {len(lookups)} things from Nominatim")
@@ -1194,7 +1015,6 @@ class OsmSearcher:
 
             if not data:
                 print("[OSM] No results found for lookup")
-                await self.event_fetching(done=True, message=event_message)
                 return []
 
             addresses_by_id = {item['osm_id']: item for item in data}
@@ -1208,7 +1028,6 @@ class OsmSearcher:
                         cache.set(lookup, updated)
                         updated_things.append(updated)
 
-            await self.event_fetching(done=True, message=event_message)
             return updated_things
         else:
             await self.event_error(Exception(response.text))
@@ -1224,7 +1043,7 @@ class OsmSearcher:
 
         if data:
             print(f"[OSM] Got nominatim search data for {query} from cache!")
-            await self.event_resolving(done=True)
+            await self.event_resolving(done=True, message=query, items=data)
             return data[:limit]
 
         print(f"[OSM] Searching Nominatim for: {query}")
@@ -1244,11 +1063,12 @@ class OsmSearcher:
 
         response = requests.get(url, params=params, headers=headers)
         if response.status_code == 200:
-            await self.event_resolving(done=True)
             data = response.json()
 
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
+
+            await self.event_resolving(done=True, message=query, items=data)
 
             print(f"Got result from Nominatim for: {query}")
             cache.set(cache_key, data)
@@ -1352,7 +1172,10 @@ class OsmSearcher:
 
     async def get_things_nearby(self, nominatim_result, place, tags,
                                 bbox, limit, radius, not_tag_groups):
-        nodes, ways = await self.overpass_search(place, tags, bbox, limit, radius, not_tag_groups)
+        # initial overpass search
+        nodes, ways = await self.overpass_search(
+            place, tags, bbox, limit, radius, not_tag_groups
+        )
 
         # use results from overpass, but if they do not exist,
         # fall back to the nominatim result. this may or may
@@ -1367,7 +1190,7 @@ class OsmSearcher:
         origin = get_bounding_box_center(bbox)
         self.calculate_haversine(origin, things_nearby)
 
-        # sort by importance + distance, drop to the liimt, then sort
+        # sort by importance + distance, drop to the limit, then sort
         # by closeness.
         things_nearby = sort_by_rank(things_nearby)
         things_nearby = things_nearby[:limit] # drop down to requested limit
@@ -1378,6 +1201,11 @@ class OsmSearcher:
             things_nearby = sort_by_closeness(origin, things_nearby, 'nav_distance', 'distance')
         else:
             sort_method = "haversine distance"
+
+        # post-process to add sequential citation/source IDs, because
+        # web ui doesn't like arbitrary source IDs.
+        for id, thing in enumerate(things_nearby):
+            thing["citation_id"] = str(id + 1)
 
         return [things_nearby, sort_method]
 
@@ -1395,7 +1223,7 @@ class OsmSearcher:
             nominatim_result = []
 
         if not nominatim_result or len(nominatim_result) == 0:
-            await self.event_search_complete(category, place, 0)
+            await self.event_search_complete(category, place, [])
             return { "place_display_name": place, "results": NO_RESULTS_BAD_ADDRESS }
 
         try:
@@ -1414,7 +1242,7 @@ class OsmSearcher:
                 print(f"WARN: Could not find display name for place: {place}")
                 place_display_name = place
 
-            await self.event_searching(category, place_display_name, done=False)
+            await self.event_searching(category, place_display_name, done=False, tags=tags)
 
             bbox = {
                 'minlat': nominatim_result['boundingbox'][0],
@@ -1428,7 +1256,7 @@ class OsmSearcher:
                                                          bbox, limit, radius, not_tag_groups)
 
             if not things_nearby or len(things_nearby) == 0:
-                await self.event_search_complete(category, place_display_name, 0)
+                await self.event_search_complete(category, place_display_name, [])
                 return { "place_display_name": place, "results": NO_RESULTS }
 
             print(f"[OSM] Found {len(things_nearby)} {category} results near {place_display_name}")
@@ -1449,13 +1277,13 @@ class OsmSearcher:
             }
 
             # emit citations for the actual results.
-            await self.event_search_complete(category, place_display_name, len(things_nearby))
+            await self.event_search_complete(category, place_display_name, things_nearby)
             for thing in things_nearby:
                 await self.emit_result_citation(thing)
 
             return { "place_display_name": place_display_name, "results": resp, "things": things_nearby }
         except ValueError:
-            await self.event_search_complete(category, place_display_name, 0)
+            await self.event_search_complete(category, place_display_name, [])
             return { "place_display_name": place_display_name, "results": NO_RESULTS, "things": [] }
         except Exception as e:
             print(e)
@@ -2243,19 +2071,3 @@ class Tools:
             "**IMPORTANT**: Tell the user to be specific in their "
             "query in their next message, so you can call the right function!")
         return resp
-
-    def show_map(self, points_of_interest: List[POI], __user__):
-        """
-        Fetch HTML and JavaScript for rendering a map.
-        :param points_of_interest: a list of points of interest.
-        :return: HTML for rendering a map and results.
-        """
-        poi_json = json.dumps(points_of_interest)
-        script = f"<script type=text/javascript>createMap({poi_json}); updateActiveListItem(0);</script>"
-        instructions = "Render the HTML in a markdown HTML code block, exactly as presented."
-        html = LEAFLET_HTML.replace("{LEAFLET_INIT}", script)
-
-        return {
-            "instructions": instructions,
-            "html": html
-        }
