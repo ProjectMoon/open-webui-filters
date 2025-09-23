@@ -9,6 +9,13 @@
 
 # OpenStreetMap Tool
 
+**3.2.0:**
+ - Greatly improved source citations and status events, making use of
+   new features in Open WebUI 0.6.30+.
+ - Change detailed mode instructions to a structured set of data.
+ - Better handling of generic city-wide queries (e.g. "What
+   restaurants are in NYC?") by centering on OSM-defined lat/lon.
+
 **3.1.3:**
  - Provide a specific function to guide LLMs in converting GPS
    coordinates to human-readable place names. Useful for `map` prompt
