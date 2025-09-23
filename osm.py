@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 3.2.0
+version: 3.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.6.30
 requirements: openrouteservice, pygments
@@ -191,6 +191,8 @@ def list_instructions(tag_type: str, used_rel: bool) -> List[str]:
         )
     else:
         instructions["result_accuracy"].append("These are the results known to be closest to the requested location.")
+
+    instructions["result_accuracy"].append("When saying the location name, use the resolved_location field.")
 
     # how to report information
     instructions["information_reporting"].append(
@@ -1413,6 +1415,11 @@ async def do_osm_search(
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     search = await searcher.search_nearby(place, tags, limit=limit, radius=radius,
                                           category=category, not_tag_groups=not_tag_groups)
+
+    # move place display name to top level results returned to client.
+    print(json.dumps(search.get("results", {})))
+    place_display_name = search.get("place_display_name", None)
+    search.get("results", {}).update(resolved_location=place_display_name)
     return search["results"]
 
 class OsmNavigator:

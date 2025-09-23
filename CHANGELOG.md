@@ -9,6 +9,10 @@
 
 # OpenStreetMap Tool
 
+**3.2.1:**
+ - Report resolved location name in tool results to improve UX when
+   the tool is given raw coordinates.
+
 **3.2.0:**
  - Greatly improved source citations and status events, making use of
    new features in Open WebUI 0.6.30+.
