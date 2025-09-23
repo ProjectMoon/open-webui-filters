@@ -228,7 +228,7 @@ def list_instructions(tag_type: str, used_rel: bool) -> List[str]:
     instructions["links"].append(
         "Give map links friendly, contextual labels. "
         "Don't just print the naked link. "
-        "Example: `You can view it on [OpenStreetMap]({EXAMPLE_OSM_LINK})`"
+        f"Example: `You can view it on [OpenStreetMap]({EXAMPLE_OSM_LINK})`"
     )
 
     instructions["citations"].extend(CITATION_INSTRUCTIONS)
