@@ -172,7 +172,7 @@ def list_instructions(tag_type: str, used_rel: bool) -> List[str]:
     models that support it.
     """
     instructions = {
-        "basics": [],
+        "result_accuracy": [],
         "information_reporting": [],
         "links": [],
         "citations": []
@@ -180,17 +180,17 @@ def list_instructions(tag_type: str, used_rel: bool) -> List[str]:
 
     # basic instructions
     if used_rel:
-        instructions["basics"].append(
-            "Begin your reply by explaining to the user "
+        instructions["result_accuracy"].append(
+            "You **MUST** Begin your reply by explaining to the user "
             "that we could not search the entire area, "
             "and therefore we did not get all results."
         )
-        instructions["basics"].append(
+        instructions["result_accuracy"].append(
             "Inform the user that more accurate results can be found by "
             "using more specific search terms like a street or specific landmark."
         )
     else:
-        instructions["basics"].append("These are the results known to be closest to the requested location.")
+        instructions["result_accuracy"].append("These are the results known to be closest to the requested location.")
 
     # how to report information
     instructions["information_reporting"].append(
