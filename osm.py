@@ -928,14 +928,16 @@ class OsmSearcher:
             'From': self.valves.from_header
         }
 
-    async def event_resolving(self, done: bool=False):
+    async def event_resolving(self, done: bool=False, message: Optional[str]=None):
         if not self.event_emitter or not self.valves.status_indicators:
             return
+
+        message = f" {message}" if message is not None else "..."
 
         if done:
             message = "OpenStreetMap: resolution complete."
         else:
-            message = "OpenStreetMap: resolving..."
+            message = f"OpenStreetMap: resolving{message}"
 
         await self.event_emitter({
             "type": "status",
@@ -946,7 +948,7 @@ class OsmSearcher:
             },
         })
 
-    async def event_fetching(self, done: bool=False, message="OpenStreetMap: fetching additional info"):
+    async def event_fetching(self, done: bool=False, message="fetching additional info"):
         if not self.event_emitter or not self.valves.status_indicators:
             return
 
@@ -954,7 +956,7 @@ class OsmSearcher:
             "type": "status",
             "data": {
                 "status": "in_progress",
-                "description": message,
+                "description": f"OpenStreetMap: {message}",
                 "done": done,
             },
         })
@@ -1136,11 +1138,16 @@ class OsmSearcher:
 
 
     async def nominatim_lookup_by_id(self, things, format="json"):
-        await self.event_fetching(done=False)
+        if len(things) == 1:
+            event_message="fetching more information for 1 result"
+        else:
+            event_message=f"fetching more information for {len(things)} results"
+
+        await self.event_fetching(done=False, message=event_message)
         updated_things = [] # the things with merged info.
 
-        # handle last chunk, which can have nones in order due to the
-        # way chunking is done.
+        # handle last chunk, which can have nones due to the way
+        # chunking is done.
         things = [thing for thing in things if thing is not None]
         lookups = []
 
@@ -1165,7 +1172,7 @@ class OsmSearcher:
 
         if len(lookups) == 0:
             print("[OSM] Got all Nominatim info from cache!")
-            await self.event_fetching(done=True)
+            await self.event_fetching(done=True, message=event_message)
             return updated_things
         else:
             print(f"Looking up {len(lookups)} things from Nominatim")
@@ -1187,7 +1194,7 @@ class OsmSearcher:
 
             if not data:
                 print("[OSM] No results found for lookup")
-                await self.event_fetching(done=True)
+                await self.event_fetching(done=True, message=event_message)
                 return []
 
             addresses_by_id = {item['osm_id']: item for item in data}
@@ -1201,7 +1208,7 @@ class OsmSearcher:
                         cache.set(lookup, updated)
                         updated_things.append(updated)
 
-            await self.event_fetching(done=True)
+            await self.event_fetching(done=True, message=event_message)
             return updated_things
         else:
             await self.event_error(Exception(response.text))
@@ -1210,7 +1217,7 @@ class OsmSearcher:
 
 
     async def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
-        await self.event_resolving(done=False)
+        await self.event_resolving(done=False, message=query)
         cache_key = f"nominatim_search_{query}"
         cache = OsmCache()
         data = cache.get(cache_key)
