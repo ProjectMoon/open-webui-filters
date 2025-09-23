@@ -116,15 +116,23 @@ NO_CONFUSION = ("**IMPORTANT!:** Check that the results match the location "
 # with correct GPS coords but incorrect URLs.
 EXAMPLE_OSM_LINK = "https://www.openstreetmap.org/#map=19/<lat>/<lon>"
 OSM_LINK_INSTRUCTIONS = (
-    "Always use inline citations in the format "
-    "[id], using the citation_id of each source. The citation ID must be in "
-    "the form of [<citation_id>]. For example, if the citation_id ID is 123456789, "
-    "print [123456789]. Do NOT print [id:123456789]. That will not work. "
-    "Always use inline citations for information relating to a result. "
     "When necessary, make friendly human-readable OpenStreetMap links "
     "by using the latitude and longitude of the amenities: "
     f"{EXAMPLE_OSM_LINK}\n\n"
 )
+
+CITATION_INSTRUCTIONS = [
+    (
+        "Always use inline citations in the format "
+        "[id], using the citation_id of each source."
+    ),
+    (
+        "The citation ID must be in the form of [<citation_id>]. "
+        "For example, if the citation_id ID is 123456789, print [123456789]."
+    ),
+    "Do NOT print [id:123456789]. That will not work. ",
+    "Always use inline citations for information relating to a result. "
+]
 
 def chunk_list(input_list, chunk_size):
     it = iter(input_list)
@@ -158,41 +166,76 @@ def navigation_instructions(travel_type) -> str:
         f"the user that it's a **{travel_type}** route."
     )
 
-def detailed_instructions(tag_type_str: str, used_rel: bool) -> str:
+def list_instructions(tag_type: str, used_rel: bool) -> List[str]:
     """
-    Produce detailed instructions for models good at following
-    detailed instructions.
+    Produce detailed instructions in a structured manner for
+    models that support it.
     """
+    instructions = {
+        "basics": [],
+        "information_reporting": [],
+        "links": [],
+        "citations": []
+    }
+
+    # basic instructions
     if used_rel:
-        rel_inst = (
-            "These are some of the results, but we did not search the entire area! "
-            "Explain to the user that we did not search the entire area! "
+        instructions["basics"].append(
+            "Begin your reply by explaining to the user "
+            "that we could not search the entire area, "
+            "and therefore we did not get all results."
+        )
+        instructions["basics"].append(
+            "Inform the user that more accurate results can be found by "
+            "using more specific search terms like a street or specific landmark."
         )
     else:
-        rel_inst = "These are the results known to be closest to the requested location. "
-    return (
-        f"These are some of the {tag_type_str} points of interest nearby. "
-        f"{rel_inst}"
-        "When telling the user about them, make sure to report "
-        "all the information (address, contact info, website, etc).\n\n"
-        "Use this information to answer the user's query. Prefer closer results "
-        "by TRAVEL DISTANCE first. Closer results are higher in the list. "
+        instructions["basics"].append("These are the results known to be closest to the requested location.")
+
+    # how to report information
+    instructions["information_reporting"].append(
+        "When telling the user about the results, make sure to report "
+        "all information relevant to the user's query (address, contact info, website, etc)."
+    )
+
+    instructions["information_reporting"].append(
+        "Do not report information that is irrelvant to the user's query."
+    )
+
+    instructions["information_reporting"].append(
+        "Prefer closer results by TRAVEL DISTANCE first. "
+        "Closer results are higher in the list."
+    )
+
+    instructions["information_reporting"].append(
         "When telling the user the distance, use the TRAVEL DISTANCE. Do not say one "
-        "distance is farther away than another. Just say what the "
-        "distances are. "
-        f"{OSM_LINK_INSTRUCTIONS}"
-        "Give map links friendly, contextual labels. Don't just print "
-        f"the naked link:\n"
-        f' - Example: You can view it on [OpenStreetMap]({EXAMPLE_OSM_LINK})\n'
-        f' - Example: Here it is on [OpenStreetMap]({EXAMPLE_OSM_LINK})\n'
-        f' - Example: You can find it on [OpenStreetMap]({EXAMPLE_OSM_LINK})\n'
-        "\n\nAnd so on.\n\n"
+        "distance is farther away than another. Just say what the distances are. "
+    )
+
+    instructions["information_reporting"].append(
         "Only use relevant results. If there are no relevant results, "
         "say so. Do not make up answers or hallucinate. "
-        f"\n\n{NO_CONFUSION}\n\n"
-        "Remember that the CLOSEST result is first, and you should use "
-        "that result first.\n\n"
     )
+
+    instructions["information_reporting"].append(NO_CONFUSION)
+    instructions["information_reporting"].append(
+        "Remember that the CLOSEST result is first, and you should use "
+        "that result first."
+    )
+
+    # links and citations
+    instructions["links"].append(OSM_LINK_INSTRUCTIONS)
+    instructions["links"].append(
+        "Give map links friendly, contextual labels. "
+        "Don't just print the naked link. "
+        "Example: `You can view it on [OpenStreetMap]({EXAMPLE_OSM_LINK})`"
+    )
+
+    instructions["citations"].extend(CITATION_INSTRUCTIONS)
+
+
+    return instructions
+
 
 def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
     """
@@ -749,10 +792,10 @@ class OsmSearcher:
         ]
 
         if done:
-            message = "OpenStreetMap: resolution complete"
+            message = "Resolution complete"
         else:
-            message = f" {message}" if message is not None else "..."
-            message = f"OpenStreetMap: resolving{message}"
+            message = f" location: {message}" if message is not None else "..."
+            message = f"Resolving{message}"
 
         await self.event_emitter({
             "type": "status",
@@ -781,7 +824,7 @@ class OsmSearcher:
                 "status": status,
                 "action": "web_search_queries_generated",
                 "queries": [query],
-                "description": f"OpenStreetMap: searching for {category} near {place}",
+                "description": f"Searching for {category} near {place}",
                 "done": done,
             },
         })
@@ -810,7 +853,7 @@ class OsmSearcher:
                 "action": "web_search",
                 "status": "in_progress",
                 "items": citation_items if citation_items else None,
-                "description": f"OpenStreetMap: found {num_results} '{category}' results",
+                "description": f"Found {num_results} results for {category.capitalize()}",
                 "done": True,
             },
         })
@@ -821,7 +864,7 @@ class OsmSearcher:
                 "action": "sources_retrieved",
                 "status": "in_progress",
                 "count": num_results,
-                "description": f"OpenStreetMap: found {num_results} '{category}' results",
+                "description": f"Found {num_results} results for {category.capitalize()}",
                 "done": True,
             },
         })
@@ -952,7 +995,8 @@ class OsmSearcher:
 
     def get_result_instructions(self, tag_type_str: str, used_rel: bool) -> str:
         if self.use_detailed_interpretation_mode():
-            return detailed_instructions(tag_type_str, used_rel)
+            #return detailed_instructions(tag_type_str, used_rel)
+            return list_instructions(tag_type_str, used_rel)
         else:
             return simple_instructions(tag_type_str, used_rel)
 
@@ -1058,7 +1102,7 @@ class OsmSearcher:
 
         if data:
             print(f"[OSM] Got nominatim search data for {query} from cache!")
-            await self.event_resolving(done=True, message=query, items=data)
+            await self.event_resolving(done=True, message=query, items=data[:limit])
             return data[:limit]
 
         print(f"[OSM] Searching Nominatim for: {query}")
@@ -1083,10 +1127,10 @@ class OsmSearcher:
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
 
-            await self.event_resolving(done=True, message=query, items=data)
+            await self.event_resolving(done=True, message=query, items=data[:limit])
 
             print(f"Got result from Nominatim for: {query}")
-            cache.set(cache_key, data)
+            cache.set(cache_key, data[:limit])
             return data[:limit]
         else:
             await self.event_error(Exception(response.text))
@@ -1384,9 +1428,9 @@ class OsmNavigator:
             return
 
         if done:
-            message = "OpenStreetMap: navigation complete"
+            message = "Navigation complete"
         else:
-            message = "OpenStreetMap: navigating..."
+            message = "Navigating..."
 
         await self.event_emitter({
             "type": "status",
