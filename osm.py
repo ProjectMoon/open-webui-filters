@@ -853,7 +853,7 @@ class OsmSearcher:
                 "action": "web_search",
                 "status": "in_progress",
                 "items": citation_items if citation_items else None,
-                "description": f"Found {num_results} results for {category.capitalize()}",
+                "description": f"Found {num_results} results for {category}",
                 "done": True,
             },
         })
@@ -864,7 +864,7 @@ class OsmSearcher:
                 "action": "sources_retrieved",
                 "status": "in_progress",
                 "count": num_results,
-                "description": f"Found {num_results} results for {category.capitalize()}",
+                "description": f"Found {num_results} results for {category}",
                 "done": True,
             },
         })
