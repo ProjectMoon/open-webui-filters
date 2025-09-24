@@ -25,9 +25,11 @@ from operator import itemgetter
 from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 
-#### Refactor todos
-# 1. Move all event emission to its own class
-# 2. Centralize valve handling into one class.
+### temp todo list
+# 1. Put instruction generation into a class.
+# 2. Refactor nominatim displayname/address thing into separate method.
+# 3. Separate result post-processing, fallback, ranking into clearer methods.
+# 4. Separate Nominatim searching and Overpass searching into two separate classes?
 
 #####################################################
 # Citation CSS
@@ -1072,7 +1074,7 @@ class OsmSearcher:
         """Calculate real distance from A to B, instead of Haversine."""
         return self._ors.calculate_distance(start, destination)
 
-    def attempt_ors(self, origin, things_nearby) -> bool:
+    def add_nav_distance_to_things(self, origin, things_nearby: List[dict]) -> bool:
         """Update distances to use ORS navigable distances, if ORS enabled."""
         used_ors = False
         cache = OsmCache()
@@ -1088,7 +1090,7 @@ class OsmSearcher:
                     nav_distance = self.calculate_navigation_distance(origin, thing)
                 except Exception as e:
                     print(f"[OSM] Error querying ORS: {e}")
-                    print(f"[OSM] Falling back to regular distance due to ORS error!")
+                    print("[OSM] Falling back to regular distance due to ORS error!")
                     nav_distance = thing['distance']
 
             if nav_distance:
@@ -1104,7 +1106,44 @@ class OsmSearcher:
         else:
             return simple_instructions(tag_type_str, used_rel)
 
-    async def nominatim_lookup_by_id(self, things, format="json"):
+    def calculate_bounding_box(self, nominatim_result):
+        """
+        Determine bounding box and/or point to use for starting
+        search.
+        """
+        rel_types = ["village", "town", "city", "suburb"]
+
+        # relations can have a lat/lon defined on them. useful for or
+        # other settlements. only do this if the nominatim result is a
+        # relation that defines an entire settled area.
+        # see also OSM admin_level
+        rel_osm_type = nominatim_result.get("osm_type", "node") == "relation"
+        rel_type = nominatim_result.get("type", "n/a") == "administrative"
+        rel_class = nominatim_result.get("class", None) == "boundary"
+        rel_addr_type = nominatim_result.get("addresstype", None) in rel_types
+        use_rel_bbox = rel_osm_type and rel_type and rel_class and rel_addr_type
+
+        if use_rel_bbox:
+            rel_lat = nominatim_result.get("lat", None)
+            rel_lon = nominatim_result.get("lon", None)
+            if rel_lat and rel_lon:
+                print("[OSM] Requested search area is settled urban zone. Using lat/lon of OSM relation.")
+                return True, {
+                    'minlat': rel_lat,
+                    'maxlat': rel_lat,
+                    'minlon': rel_lon,
+                    'maxlon': rel_lon
+                }
+
+        # fall back to nominatim bounding box for everything else.
+        return False, {
+            'minlat': nominatim_result['boundingbox'][0],
+            'maxlat': nominatim_result['boundingbox'][1],
+            'minlon': nominatim_result['boundingbox'][2],
+            'maxlon': nominatim_result['boundingbox'][3]
+        }
+
+    async def enrich_from_nominatim(self, things, format="json"):
         updated_things = [] # the things with merged info.
 
         # handle last chunk, which can have nones due to the way
@@ -1216,7 +1255,7 @@ class OsmSearcher:
             print(response.text)
             return None
 
-    async def overpass_search(
+    async def search_osm(
             self, place, tags, bbox, limit=5, radius=4000, not_tag_groups={}
     ) -> (List[dict], List[dict]):
         """
@@ -1297,7 +1336,7 @@ class OsmSearcher:
             if len(things_missing_names) > 0:
                 print(f"Updating {len(things_missing_names)} things with info")
                 for way_chunk in chunk_list(things_missing_names, 20):
-                    updated = await self.nominatim_lookup_by_id(way_chunk)
+                    updated = await self.enrich_from_nominatim(way_chunk)
                     ways = ways + updated
 
             return nodes, ways
@@ -1306,24 +1345,28 @@ class OsmSearcher:
             raise Exception(f"Error calling Overpass API: {response.text}")
 
 
-    async def get_things_nearby(
+    async def search_and_rank(
             self, nominatim_result, place, tags,
             bbox, limit, radius, not_tag_groups):
-        # initial overpass search
-        nodes, ways = await self.overpass_search(
+        """
+        Search OpenStreetMap and sort results according to
+        distance and relevance to the query.
+        """
+        # initial OSM search
+        nodes, ways = await self.search_osm(
             place, tags, bbox, limit, radius, not_tag_groups
         )
 
-        # use results from overpass, but if they do not exist,
-        # fall back to the nominatim result. this may or may
+        # use results from the initial search, but if they do not
+        # exist, fall back to the nominatim result. this may or may
         # not be a good idea.
         things_nearby = (nodes + ways
                          if len(nodes) > 0 or len(ways) > 0
                          else OsmSearcher.fallback(nominatim_result))
 
-        # in order to not spam ORS, we first sort by haversine
-        # distance and drop number of results to the limit. then, if
-        # enabled, we calculate ORS distances. then we sort again.
+        # add distance to things and drop number of results to the
+        # limit. then, if enabled, we calculate ORS distances. then we
+        # sort again.
         origin = OsmUtils.get_bounding_box_center(bbox)
         OsmUtils.add_haversine_distance_to_things(origin, things_nearby)
 
@@ -1333,7 +1376,7 @@ class OsmSearcher:
         things_nearby = things_nearby[:limit] # drop down to requested limit
         things_nearby = OsmSearcher.sort_by_closeness(origin, things_nearby, 'distance')
 
-        if self.attempt_ors(origin, things_nearby):
+        if self.add_nav_distance_to_things(origin, things_nearby):
             sort_method = "travel distance"
             things_nearby = OsmSearcher.sort_by_closeness(origin, things_nearby, 'nav_distance', 'distance')
         else:
@@ -1346,47 +1389,19 @@ class OsmSearcher:
 
         return [things_nearby, sort_method]
 
-    def calculate_bounding_box(self, nominatim_result):
-        """
-        Determine bounding box and/or point to use for starting
-        search.
-        """
-        rel_types = ["village", "town", "city", "suburb"]
-
-        # relations can have a lat/lon defined on them. useful for or
-        # other settlements. only do this if the nominatim result is a
-        # relation that defines an entire settled area.
-        # see also OSM admin_level
-        rel_osm_type = nominatim_result.get("osm_type", "node") == "relation"
-        rel_type = nominatim_result.get("type", "n/a") == "administrative"
-        rel_class = nominatim_result.get("class", None) == "boundary"
-        rel_addr_type = nominatim_result.get("addresstype", None) in rel_types
-        use_rel_bbox = rel_osm_type and rel_type and rel_class and rel_addr_type
-
-        if use_rel_bbox:
-            rel_lat = nominatim_result.get("lat", None)
-            rel_lon = nominatim_result.get("lon", None)
-            if rel_lat and rel_lon:
-                print("[OSM] Requested search area is settled urban zone. Using lat/lon of OSM relation.")
-                return True, {
-                    'minlat': rel_lat,
-                    'maxlat': rel_lat,
-                    'minlon': rel_lon,
-                    'maxlon': rel_lon
-                }
-
-        # fall back to nominatim bounding box for everything else.
-        return False, {
-            'minlat': nominatim_result['boundingbox'][0],
-            'maxlat': nominatim_result['boundingbox'][1],
-            'minlon': nominatim_result['boundingbox'][2],
-            'maxlon': nominatim_result['boundingbox'][3]
-        }
 
     async def search_nearby(
             self, place: str, tags: List[str], limit: int=5, radius: int=4000,
             category: str="POIs", not_tag_groups={}
     ) -> dict:
+        """
+        Main entrypoint into the searching logic. Checks header
+        validity, and then uses Nominatim to figure out WHERE to
+        search. From that spot, search for POIs using Overpass Turbo
+        (with data enrichment from Nominatim if necessary), rank them
+        by distance and relevance, and then final result list plus
+        some metadata.
+        """
         headers = self.create_headers()
         if not headers:
             return { "place_display_name": place, "results": VALVES_NOT_SET }
@@ -1421,7 +1436,7 @@ class OsmSearcher:
             used_rel, bbox = self.calculate_bounding_box(nominatim_result)
 
             print(f"[OSM] Searching for {category} near {place_display_name}")
-            things_nearby, sort_method = await self.get_things_nearby(
+            things_nearby, sort_method = await self.search_and_rank(
                 nominatim_result, place, tags,
                 bbox, limit, radius, not_tag_groups
             )
