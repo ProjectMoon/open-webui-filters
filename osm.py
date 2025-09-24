@@ -25,6 +25,10 @@ from operator import itemgetter
 from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 
+#### Refactor todos
+# 1. Move all event emission to its own class
+# 2. Centralize valve handling into one class.
+
 #####################################################
 # Citation CSS
 #####################################################
