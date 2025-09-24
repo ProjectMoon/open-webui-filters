@@ -1,4 +1,4 @@
-# 🌍 OpenStreetMap Tool 🛠️
+# 🌍 OpenStreetMap Tool
 
 The OpenStreetMap tool helps you find points of interest, get directions, and explore locations right from your chat interface. Whether you're looking for the nearest coffee shop, trying to navigate to a new address, or just curious about what's around you, this tool makes it easy to get the information you need from OpenStreetMap.
 
@@ -30,28 +30,31 @@ The OpenStreetMap tool helps you find points of interest, get directions, and ex
 
 ### ✅ Regularly Tested Models (Mid-Range Quantization)
 
-The tool is regularly tested with these models at quants ranging from `Q3_K_XL` to `Q5_K_M`.
+The tool is regularly tested with these models at quants ranging from `Q3_K_XL` to `Q5_K_M`, using llama.cpp.
+
 - [🧠 Mistral Small 3.2 24b](https://ollama.com/library/mistral-small3.2)
 - [🤖 Qwen 3 14b](https://ollama.com/library/qwen3:14b)
 - [🧠 Qwen 3 30b-a3b Instruct 2507](https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF)
 
+_No testing is currently done with ollama._
+
 ### ⚠️ Notes for Model Selection
-- **Native function calling** allows the tool to work better. But Open WebUI's built-in function calling also works.
-- **Context Window**: Ensure models have sufficient context window size (minimum 8k tokens recommended)..
+
+- **Native function calling** allows the tool to work better (multiple function calls etc). Open WebUI's built-in function calling also works, but is limited to one function call per message.
+- **Context Window**: Ensure models have sufficient context window size (a minimum of 8k is recommended).
 - **Qwen 2.5 14b** and **Mistral Nemo** are older models that aren't officially recommended, but should work fine for most use cases.
 - **Llama 3.1 8b** is not recommended. It may work with very explicit prompts.
 - **Weaker models** may need the **"Instruction Oriented Interpretation"** setting disabled for consistent results.
 
 ---
 
-## 🔍 How It Works
+## 🧩 How It Works
 
-### 🧩 Step-by-Step Process
 1. **Address Resolution**
    - Converts input (e.g., "123 Main St, Example City, USA") to GPS coordinates using Nominatim.
    - Requires valid **User-Agent** and **From Header** to avoid being blocked by Nominatim.
 
-2. **Urban Awareness**
+2. **Define Search Area**
    - Creates a geographic "box" around the resolved address to define the search area.
    - Uses the **center point** of the either the bounding box, or the OSM-defined center point of a town/city.
 
@@ -101,8 +104,8 @@ The tool is regularly tested with these models at quants ranging from `Q3_K_XL` 
 ## 📌 Usage Tips
 
 ### 📍 Best Practices
-- **Avoid city-wide searches** - be specific when searching for locations.
-- Avoid **sub-unit details** (e.g., apartment numbers, floor levels).
+- Avoid city-wide searches - be specific when searching for locations.
+- Avoid sub-unit details (e.g., apartment numbers, floor levels).
 
 ### 🗺️ Navigation Setup
 Enabling OpenRouteService allows the tool to provide navigation instructions and more accurate distance calculations.
@@ -114,7 +117,7 @@ Enabling OpenRouteService allows the tool to provide navigation instructions and
 ### 📍 Real-Time Location Support
 To enable location-based queries (e.g., "Find the nearest coffee shop"):
 1. **Enable user location** in OpenWebUI settings (under "User Preferences" or "Privacy").
-2. **Configure a model** with `{{USER_LOCATION}}` in its system prompt (e.g., `"The user's current location is {{USER_LOCATION}}."`).
+2. **Configure a model** with `{{USER_LOCATION}}` in its system prompt (e.g. `"The user's current location is {{USER_LOCATION}}."`).
 3. OpenWebUI will automatically inject real-time GPS coordinates into the system prompt for every message.
 
 ---
@@ -137,7 +140,7 @@ The tool will not function without valid **User-Agent** and **From Header** sett
 - **Model Misbehavior**:
   - Use a stronger model.
   - Disable **Instruction Oriented Interpretation** for weaker models.
-  - Explicitly specify which tool function for the model to use (e.g., "Use the find eateries tool").
+  - Explicitly specify which tool function for the model to use (e.g. "Use the find eateries tool").
 
 ---
 
