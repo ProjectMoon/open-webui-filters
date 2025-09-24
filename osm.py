@@ -917,21 +917,19 @@ class OsmCache:
 
 class OrsRouter:
     def __init__(
-        self, valves, user_valves: Optional[dict], event_emitter=None,
+        self, valves: Tools.Valves, user_valves: Optional[Tools.UserValves], event_emitter=None,
     ):
         self.cache = OsmCache()
-        self.valves = valves
         self.event_emitter = event_emitter
-        self.user_valves = user_valves
 
-        if self.valves.ors_api_key is not None and self.valves.ors_api_key != "":
-            if self.valves.ors_instance is not None:
+        if valves.ors_api_key is not None and valves.ors_api_key != "":
+            if valves.ors_instance is not None:
                 self._client = openrouteservice.Client(
-                    base_url=self.valves.ors_instance,
-                    key=self.valves.ors_api_key
+                    base_url=valves.ors_instance,
+                    key=valves.ors_api_key
                 )
             else:
-                self._client = openrouteservice.Client(key=self.valves.ors_api_key)
+                self._client = openrouteservice.Client(key=valves.ors_api_key)
         else:
             self._client = None
 
@@ -991,19 +989,27 @@ class OrsRouter:
         return route.get('summary', {}).get('distance', None) if route else None
 
 class OsmSearcher:
-    def __init__(self, valves, user_valves: Optional[dict], event_emitter):
-        self.valves = valves
+    def __init__(self, valves: Tools.Valves, user_valves: Optional[Tools.UserValves], event_emitter):
         self.events = event_emitter
-        self.user_valves = user_valves
+
+        # config settings
+        self.nominatim_url = valves.nominatim_url
+        self.overpass_turbo_url = valves.overpass_turbo_url
+        self.user_agent = valves.user_agent
+        self.from_header = valves.from_header
+        self.detailed_instructions = (user_valves.instruction_oriented_interpretation
+                                      if user_valves else valves.instruction_oriented_interpretation)
+
+        # dependents
         self._ors = OrsRouter(valves, user_valves, event_emitter)
 
     def create_headers(self) -> Optional[dict]:
-        if len(self.valves.user_agent) == 0 or len(self.valves.from_header) == 0:
+        if len(self.user_agent) == 0 or len(self.from_header) == 0:
             return None
 
         return {
-            'User-Agent': self.valves.user_agent,
-            'From': self.valves.from_header
+            'User-Agent': self.user_agent,
+            'From': self.from_header
         }
 
     def calculate_navigation_distance(self, start, destination) -> float:
@@ -1036,17 +1042,8 @@ class OsmSearcher:
 
         return used_ors
 
-    def use_detailed_interpretation_mode(self) -> bool:
-        # Let user valve for instruction mode override the global
-        # setting.
-        if self.user_valves:
-            return self.user_valves.instruction_oriented_interpretation
-        else:
-            return self.valves.instruction_oriented_interpretation
-
     def get_result_instructions(self, tag_type_str: str, used_rel: bool) -> str:
-        if self.use_detailed_interpretation_mode():
-            #return detailed_instructions(tag_type_str, used_rel)
+        if self.detailed_instructions:
             return list_instructions(tag_type_str, used_rel)
         else:
             return simple_instructions(tag_type_str, used_rel)
@@ -1143,7 +1140,7 @@ class OsmSearcher:
         else:
             print(f"Looking up {len(lookups)} things from Nominatim")
 
-        url = urljoin(self.valves.nominatim_url, "lookup")
+        url = urljoin(self.nominatim_url, "lookup")
         params = {
             'osm_ids': ",".join(lookups),
             'format': format
@@ -1192,7 +1189,7 @@ class OsmSearcher:
 
         print(f"[OSM] Searching Nominatim for: {query}")
 
-        url = urljoin(self.valves.nominatim_url, "search")
+        url = urljoin(self.nominatim_url, "search")
         params = {
             'q': query,
             'format': format,
@@ -1236,7 +1233,6 @@ class OsmSearcher:
         if not headers:
             raise ValueError("Headers not set")
 
-        url = self.valves.overpass_turbo_url
         center = OsmUtils.get_bounding_box_center(bbox)
         around = f"(around:{radius},{center['lat']},{center['lon']})"
 
@@ -1271,7 +1267,7 @@ class OsmSearcher:
 
         print(query)
         data = { "data": query }
-        response = requests.get(url, params=data, headers=headers)
+        response = requests.get(self.overpass_turbo_url, params=data, headers=headers)
         if response.status_code == 200:
             # nodes have have exact GPS coordinates. we also include
             # useful way entries, post-processed to remove extra data
@@ -1515,9 +1511,7 @@ class OsmNavigator:
     def __init__(
         self, valves, user_valves: Optional[dict], event_emitter,
     ):
-        self.valves = valves
         self.events = event_emitter
-        self.user_valves = user_valves
 
     async def navigate(self, start_place: str, destination_place: str):
         await self.events.navigating(done=False)
