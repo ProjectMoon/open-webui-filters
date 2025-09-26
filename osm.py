@@ -13,6 +13,7 @@ import math
 import requests
 import uuid
 
+from fastapi.responses import HTMLResponse
 from pygments import highlight
 from pygments.lexers import JsonLexer
 from pygments.formatters import HtmlFormatter
@@ -25,8 +26,232 @@ from operator import itemgetter
 from typing import List, Optional, Tuple, Literal, TypeAlias
 from pydantic import BaseModel, Field
 
+MAP_UI = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Results</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+            padding: 12px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: #6c757d;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+
+        h2 {
+            font-size: 1.3rem;
+            color: #34495e;
+            margin: 20px 0 10px;
+            font-weight: 600;
+        }
+
+        #map {
+            height: 400px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border: 1px solid #ddd;
+        }
+
+        #poi-list {
+            list-style-type: none;
+            padding: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 8px;
+        }
+
+        #poi-list li {
+            padding: 10px 12px;
+            margin: 0;
+            background-color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+            border: 1px solid #e9ecef;
+            font-weight: 600;
+            color: #495057;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #poi-list li:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
+            background-color: #f8f9fa;
+            color: #2c3e50;
+        }
+
+        #poi-list li.active {
+            background-color: #3498db;
+            color: white;
+            box-shadow: 0 3px 8px rgba(52, 152, 219, 0.2);
+        }
+
+        .poi-description {
+            font-size: 0.8rem;
+            color: #555; /* Slightly lighter than default */
+            margin-top: 4px;
+            font-weight: 400;
+        }
+
+        #poi-list li.active .poi-description {
+            color: rgba(255, 255, 255, 0.9); /* Lighter text for active state */
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Nearby {REPLACE_WITH_CATEGORY} results</h1>
+        <p class="subtitle">Data from OpenStreetMap</p>
+
+        <div id="map"></div>
+
+        <h2>List</h2>
+        <ul id="poi-list"></ul>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // POI data with coordinates and names
+        // [ { name, coords, lat, lon, description } ]
+        const poiData = {REPLACE_WITH_POI_RESULTS};
+
+        // Function to create the map
+        function createMap(poiData) {
+            // Create map centered on first POI
+            const map = L.map('map');
+            if (poiData.length > 0) map.setView([poiData[0].lat, poiData[0].lon], 12);
+
+            // Add OpenStreetMap tiles
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+
+            // Store markers and popup references
+            const markers = [];
+
+            // Add markers to map and create list items dynamically
+            poiData.forEach((poi, index) => {
+                const marker = L.marker([poi.lat, poi.lon]).addTo(map);
+                const osmLink = `https://www.openstreetmap.org/${poi.osm_type}/${poi.osm_id}`
+                const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`
+                const address = `<p>${poi.address}</p>`
+                const description = `<p>${poi.description}</p>`
+                const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`
+
+                marker.bindPopup(`${header}${address}${description}${coords}`);
+                markers.push(marker);
+
+                // Create list item dynamically
+                const listItem = document.createElement('li');
+
+                listItem.innerHTML = `
+                    <span>${poi.name}</span>
+                    <span class="poi-description">${poi.description}</span>
+                `;
+                listItem.onclick = () => focusOnMarker(index, map, markers);
+                listItem.classList.add('poi-item');
+
+                // Add to list
+                document.getElementById('poi-list').appendChild(listItem);
+            });
+
+            return { map, markers };
+        }
+
+        // Function to focus on a specific marker
+        function focusOnMarker(index, map, markers) {
+            const marker = markers[index];
+
+            // Fit map to show all markers with reduced padding
+            const bounds = poiData.map(poi => L.latLng([ poi.lat, poi.lon ]));
+            map.fitBounds(bounds, { padding: [15, 15], maxZoom: 13 });
+
+            // Open popup for selected marker
+            marker.openPopup();
+
+            // Update active state in list
+            updateActiveListItem(index);
+        }
+
+        // Function to update active list item
+        function updateActiveListItem(index) {
+            const listItems = document.querySelectorAll('#poi-list li');
+            listItems.forEach((item, i) => {
+                if (i === index) {
+                    item.classList.add('active');
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+        }
+
+        // Initialize map and markers
+        const { map, markers } = createMap(poiData);
+
+        // Initialize with first POI selected
+        updateActiveListItem(0);
+    </script>
+</body>
+</html>
+"""
+
+NWR: TypeAlias = Literal['node', 'way', 'relation']
+
+class OsmPOI(BaseModel):
+    """Represents a Point of Interest found during map search."""
+    name: str = Field(description="Name of the Point of Interest.")
+    address: Optional[str] = Field(description="Address of the Point of Interest.")
+    description: str = Field(description="Description of the Point of Interest.")
+    lat: float = Field(description="Latitude of the Point of Interest.")
+    lon: float = Field(description="Longitude of the Point of Interest.")
+    osm_id: str = Field(description="OpenStreetMap ID of the Point of Interest.")
+    osm_type: NWR = Field(description="OpenStreetMap entity type of the Point of Interest.")
+    pass
+
 # Type aliases for various searching categories. Used for generation
 # of the tool JSON schemas while keeping code readable.
+
+# Specifically for show_map to produce a nice title bar.
+POICategory: TypeAlias = Literal[
+    'Groceries', 'Recreation', 'Restaurants & Bars', 'Travel & Tourism',
+    'Healthcare', 'Education & Schools', 'Fuel & EV Charging',
+    'Religious Locations'
+]
+
 UrbanSetting: TypeAlias = Literal['urban', 'suburban', 'rural']
 
 StoreCategory: TypeAlias = Literal[
@@ -896,6 +1121,8 @@ class OsmParser:
         else:
             friendly_thing['nav_distance'] = f"a bit more than {friendly_thing['distance']}km"
 
+        friendly_thing['osm_id'] = thing.get('id', 'unknown')
+        friendly_thing['osm_type'] = thing.get('type', None)
         friendly_thing['name'] = name if name else "unknown"
         friendly_thing['address'] = address if address else "unknown"
         friendly_thing['lat'] = lat if lat else "unknown"
@@ -2402,6 +2629,26 @@ class Tools:
             return await _find_ev_fast_chargers_near_place_with_type(
                 self.valves, __user__, place, ev_charger_type, setting, __event_emitter__
             )
+
+
+    def show_map(self, category: POICategory, results: List[OsmPOI]) -> HTMLResponse:
+        """
+        Shows a map for search results. Takes a list of Points of Interest that
+        were returned in a previous search function call. You **must** call another
+        function first to get information required for this function!
+        :param category: Results category searched for.
+        :param results: Point of Interest (POI) results from a previous function call.
+        :return: HTML for displaying a search results map.
+        """
+        headers = {"Content-Disposition": "inline"}
+        results_json = json.dumps(results)
+        print(results_json)
+
+        ui_html = (MAP_UI
+                   .replace("{REPLACE_WITH_POI_RESULTS}", results_json)
+                   .replace("{REPLACE_WITH_CATEGORY}", category))
+
+        return HTMLResponse(content=ui_html, headers=headers)
 
 
     # This function exists to help catch situations where the user is
