@@ -63,6 +63,20 @@ EVChargerCategory: TypeAlias = Literal[
     'ccs1', 'gb/t', 'nacs', 'all'
 ]
 
+# Religions from the OSM wiki. Some make use of the denomination tag.
+# Others do not. any_religion is a special "category" that forces the
+# tool to search for any place of worship amenity.
+ReligionCategory: TypeAlias = Literal[
+    'any_religion', 'buddhist', 'christian', 'hindu', 'jain', 'jewish', 'muslim',
+    'pagan', 'shinto', 'sikh', 'taoist', 'zoroastrian',
+    'ancestor', 'animist', 'antoinist', 'bahai', 'benzhu',
+    'caodaism', 'chinese_folk', 'confucian', 'shamanic', 'scientologist',
+    'self-realization_fellowship', 'spiritualist', 'tenrikyo',
+    'unitarian_universalist','vietnamese_folk', 'voodoo',
+    'yazidi',
+    'multifaith', 'humanist', 'atheist', 'null', 'laica'
+]
+
 
 
 ### temp todo list
@@ -1045,14 +1059,33 @@ class OsmSearcher:
         return None
 
     @staticmethod
+    def flatten_tags(tags):
+        flat_tags = []
+        for str_or_list in tags:
+            if isinstance(str_or_list, str):
+                flat_tags.append(str_or_list)
+            else:
+                flat_tags += [tag for tag in str_or_list]
+
+        return flat_tags
+
+    @staticmethod
     def group_tags(tags):
         result = {}
+        and_queries = []
         for tag in tags:
+            # skip AND queries because they must be handled
+            # separately.
+            if not isinstance(tag, str):
+                and_queries.append(tag)
+                continue
+
             key, value = tag.split('=')
             if key not in result:
                 result[key] = []
             result[key].append(value)
-        return result
+
+        return result, and_queries
 
     @staticmethod
     def fallback(nominatim_result):
@@ -1215,7 +1248,7 @@ class OsmSearcher:
             print("[OSM] Got all Nominatim info from cache!")
             return updated_things
         else:
-            print(f"Looking up {len(lookups)} things from Nominatim")
+            print(f"[OSM] Looking up {len(lookups)} things from Nominatim")
 
         url = urljoin(self.nominatim_url, "lookup")
         params = {
@@ -1288,7 +1321,7 @@ class OsmSearcher:
 
             await self.events.resolving(done=True, message=query, items=data[:limit])
 
-            print(f"Got result from Nominatim for: {query}")
+            print(f"[OSM] Got result from Nominatim for: {query}")
             cache.set(cache_key, data[:limit])
             return data[:limit]
         else:
@@ -1299,11 +1332,14 @@ class OsmSearcher:
     async def search_osm(
             self, place, tags, bbox, limit=5, radius=4000, not_tag_groups={}
     ) -> (List[dict], List[dict]):
-        """
-        Return a list relevant of OSM nodes and ways. Some
+        """Return a list relevant of OSM nodes and ways. Some
         post-processing is done on ways in order to add coordinates to
         them. Optionally specify not_tag_groups, which is a dict of
         tag to values, all of which will be excluded from the search.
+        Each item in the tag list is treated as an OR query. An entry
+        in the tag list can be a string (basic search for "this tag"),
+        or it can be a list of strings itself, which is treated as an
+        AND query.
         """
         print(f"[OSM] Searching Overpass Turbo around origin {place}")
         headers = self.create_headers()
@@ -1313,7 +1349,13 @@ class OsmSearcher:
         center = OsmUtils.get_bounding_box_center(bbox)
         around = f"(around:{radius},{center['lat']},{center['lon']})"
 
-        tag_groups = OsmSearcher.group_tags(tags)
+        tag_groups, and_queries = OsmSearcher.group_tags(tags)
+
+        # tag_list is e.g. [amenity=restaurant, place=blah, ...].
+        # and_queries is a list of those lists.
+        and_groups = ["".join(f"[{tag}]" for tag in tags) for tags in and_queries]
+
+
         search_groups = [f'"{tag_type}"~"{"|".join(values)}"'
                          for tag_type, values in tag_groups.items()]
 
@@ -1324,9 +1366,10 @@ class OsmSearcher:
 
         searches = []
         for search_group in search_groups:
-            searches.append(
-                f'nwr[{search_group}]{not_search_query}{around}'
-            )
+            searches.append(f'nwr[{search_group}]{not_search_query}{around}')
+
+        for and_group in and_groups:
+            searches.append(f'nwr{and_group}{not_search_query}{around}')
 
         search = ";\n".join(searches)
         if len(search) > 0:
@@ -1488,7 +1531,7 @@ class OsmSearcher:
 
             print(f"[OSM] Found {len(things_nearby)} {category} results near {place_display_name}")
 
-            tag_type_str = ", ".join(tags)
+            tag_type_str = ", ".join(OsmSearcher.flatten_tags(tags))
 
             # Only print the full result instructions if we
             # actually have something.
@@ -2117,18 +2160,28 @@ class Tools:
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    not_tag_groups=not_tag_groups)
 
-    async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: UrbanSetting, __event_emitter__) -> str:
+    async def find_place_of_worship_near_place(
+            self, __user__: dict, place: str,
+            religion: ReligionCategory,
+            setting: UrbanSetting,
+            __event_emitter__
+    ) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
         given place or address. For setting, specify if the place is an urban area,
         a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
+        :param religion: Narrow the search to a particular religion. Use "any_religion" to search for all places of worship.
         :param setting: Urban-ness of the requested location. Controls search radius.
         :return: A list of nearby places of worship, if found.
         """
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
+
         tags = ["amenity=place_of_worship"]
+        if religion != "any_religion" and religion is not None:
+            tags = [["amenity=place_of_worship", f"religion={religion}"]]
+
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
