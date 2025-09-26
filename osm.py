@@ -747,9 +747,10 @@ class OsmUtils:
 class OsmParser:
     """All result parsing-related functionality in one place."""
 
-    def __init__(self, original_location: str, things_nearby: List[dict]):
+    def __init__(self, original_location: str, things_nearby: List[dict], include_raw_data=True):
         self.original_location = original_location
         self.things_nearby = things_nearby
+        self.include_raw_data = include_raw_data
 
     @staticmethod
     def parse_address_from_address_obj(address) -> Optional[str]:
@@ -948,8 +949,10 @@ class OsmParser:
                 "travel_distance": trv_distance_json,
                 "openstreetmap_link": map_link,
                 "citation_id": citation_id,
-                "raw_osm_json": thing
             })
+
+            if self.include_raw_data:
+                friendly_thing["raw_osm_json"] = thing
 
             entries.append(friendly_thing)
 
@@ -1087,6 +1090,7 @@ class OsmSearcher:
         self.overpass_turbo_url = valves.overpass_turbo_url
         self.user_agent = valves.user_agent
         self.from_header = valves.from_header
+        self.include_raw_data = valves.include_raw_osm_data
         self.detailed_instructions = (user_valves.instruction_oriented_interpretation
                                       if user_valves else valves.instruction_oriented_interpretation)
 
@@ -1623,7 +1627,7 @@ class OsmSearcher:
 
             # Only print the full result instructions if we
             # actually have something.
-            parser = OsmParser(place, things_nearby)
+            parser = OsmParser(place, things_nearby, include_raw_data=self.include_raw_data)
             search_results = parser.convert_and_validate_results(sort_message=sort_method)
             if search_results:
                 result_instructions = self.get_result_instructions(tag_type_str, used_rel)
@@ -1988,6 +1992,10 @@ class Tools:
         status_indicators: bool = Field(
             default=True,
             description=("Emit status update events to the web UI.")
+        )
+        include_raw_osm_data: bool = Field(
+            default=False,
+            description="Include raw OSM data in search results or not."
         )
         pass
 
