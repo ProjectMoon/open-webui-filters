@@ -22,8 +22,48 @@ from openrouteservice.directions import directions as ors_directions
 
 from urllib.parse import urljoin
 from operator import itemgetter
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Literal, TypeAlias
 from pydantic import BaseModel, Field
+
+# Type aliases for various searching categories. Used for generation
+# of the tool JSON schemas while keeping code readable.
+UrbanSetting: TypeAlias = Literal['urban', 'suburban', 'rural']
+
+StoreCategory: TypeAlias = Literal[
+    'groceries', 'convenience', 'alcohol', 'drugs',
+    'cannabis', 'electronics', 'electrical', 'hardware', 'diy'
+]
+
+RecreationCategory: TypeAlias = Literal[
+    'swimming', 'playgrounds', 'amusement', 'sports'
+]
+
+EateryCategory: TypeAlias = Literal[
+    'sit_down_restaurants', 'fast_food', 'cafe_or_bakery',
+    'bars_and_pubs'
+]
+
+TravelCategory: TypeAlias = Literal[
+    'tourist_attractions', 'accommodation', 'bike_rentals',
+    'car_rentals', 'public_transport'
+]
+
+HealthcareCategory: TypeAlias = Literal[
+    'doctor', 'hospital', 'pharmacy'
+]
+
+EducationCategory: TypeAlias = Literal[
+    'schools', 'universities_and_colleges', 'libraries'
+]
+
+FuelCategory: TypeAlias = Literal['fossil_fuels',  'ev_fast_charging']
+FuelTypeCategory: TypeAlias = Literal['petrol', 'diesel', 'all']
+EVChargerCategory: TypeAlias = Literal[
+    'chademo', 'chademo3', 'chaoji', 'ccs2',
+    'ccs1', 'gb/t', 'nacs', 'all'
+]
+
+
 
 ### temp todo list
 # 1. Put instruction generation into a class.
@@ -1662,7 +1702,8 @@ def recreation_to_tags(recreation_type: str) -> Tuple[List[str], dict]:
     elif recreation_type == "amusement":
         return ["leisure=park", "leisure=amusement_arcade", "tourism=theme_park"], {}
     elif recreation_type == "sports":
-        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course"], {}
+        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course",
+                "leisure=pitch", "leisure=sports_center"], {}
     else:
         return [], {}
 
@@ -1929,14 +1970,14 @@ class Tools:
         return await navigator.navigate(start_address_or_place, destination_address_or_place)
 
     async def find_stores_by_category_near_place(
-            self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+            self, place: str, category: StoreCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds stores of a specific type on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of store to search for. Must be one of "groceries", "convenience", "alcohol", "drugs", "cannabis", "electronics", "electrical", "hardware", or "diy".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of store to search for.
         """
         allowed_categories = [
             "groceries", "convenience", "alcohol", "drugs",
@@ -1957,15 +1998,15 @@ class Tools:
                                    not_tag_groups=not_tag_groups)
 
     async def find_recreation_by_category_near_place(
-            self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+            self, place: str, category: RecreationCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds recreation facilities of a specific type on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         Note: amusement category can be arcades, theme parks, and similar.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of recreation to search for. Must be one of "swimming", "playgrounds", "amusement", or "sports".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of recreation to search for.
         """
         allowed_categories = ["swimming", "playgrounds", "amusement", "sports"]
         setting = normalize_setting(setting)
@@ -1991,16 +2032,16 @@ class Tools:
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
-    async def find_eateries_by_category_near_place(
-            self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+    async def find_eateries_and_drinking_by_category_near_place(
+            self, place: str, category: EateryCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds places to eat or drink on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of eateries to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of eateries to search for.
         """
         allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
         setting = normalize_setting(setting)
@@ -2016,15 +2057,15 @@ class Tools:
                                    not_tag_groups=not_tag_groups)
 
     async def find_travel_info_by_category_near_place(
-        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+        self, place: str, category: TravelCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Find tourist attractions, accommodation, public transport, bike rentals, or car rentals on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of travel info to search for. Must be one of "tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of travel info to search for.
         """
         allowed_categories = ["tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport"]
         setting = normalize_setting(setting)
@@ -2053,15 +2094,15 @@ class Tools:
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
     async def find_healthcare_by_category_near_place(
-        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+        self, place: str, category: HealthcareCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Find healthcare, doctors, hospitals, and pharmacies on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of healthcare to search for. Must be one of "doctor", "hospital", "pharmacy".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of healthcare to search for.
         """
         allowed_categories = ["doctor", "hospital", "pharmacy"]
         setting = normalize_setting(setting)
@@ -2076,13 +2117,13 @@ class Tools:
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    not_tag_groups=not_tag_groups)
 
-    async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+    async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: UrbanSetting, __event_emitter__) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
         given place or address. For setting, specify if the place is an urban area,
         a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :param setting: Urban-ness of the requested location. Controls search radius.
         :return: A list of nearby places of worship, if found.
         """
         setting = normalize_setting(setting)
@@ -2092,15 +2133,15 @@ class Tools:
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
 
     async def find_education_by_category_near_place(
-        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+        self, place: str, category: EducationCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Find education institutions and resources on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         Note: category "schools" searches only for primary and secondary schools, NOT universities or colleges.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of education to search for. Must be one of "schools", "universities_and_colleges", "libraries".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of education to search for.
         """
         allowed_categories = ["schools", "universities_and_colleges", "libraries"]
         setting = normalize_setting(setting)
@@ -2116,21 +2157,24 @@ class Tools:
                                    not_tag_groups=not_tag_groups)
 
     async def find_fuel_or_charging_by_category_near_place(
-            self, place: str, category: str, fuel_type: str, ev_charger_type: str, setting: str, __user__: dict, __event_emitter__
+            self, place: str, category: FuelCategory, fuel_type: FuelTypeCategory,
+            ev_charger_type: EVChargerCategory, setting: UrbanSetting,
+            __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds gas stations, petrol stations, fuel stations, or EV fast chargers near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        Does not find slow (regular) EV chargers.
+        Does not find slow (regular) EV chargers. EV fast charger note: 'chademo3' is not the same as 'chademo'.
+        'chademo3' is also known as 'chaoji'.j
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category to search for. Must be one of "gas_or_petrol", "ev_fast_charging".
-        :param fuel_type: Must be one of "petrol", "diesel", or "all" (default). Should be null if searching for EV chargers.
-        :param ev_charger_type: Must be one of "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", or "all" (default). Should be null if searching for gas.
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category to search for: either fossil fuels or EV fast chargers.
+        :param fuel_type: Type of fossil fuel to search for.
+        :param ev_charger_type: Type of EV charger to search for.
         :return: A list of nearby fueling stations, if found.
         """
         # subfunction to find fuel
-        async def _find_fuel_near_place(valves, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+        async def _find_fossil_fuel_near_place(valves, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
             setting = normalize_setting(setting)
             user_valves = __user__["valves"] if "valves" in __user__ else None
             tags = ["amenity=fuel"]
@@ -2167,15 +2211,15 @@ class Tools:
 
 
         # Main part of fuel search function
-        allowed_categories = ["gas_or_petrol", "ev_fast_charging"]
+        allowed_categories = ["fossil_fuels", "ev_fast_charging"]
         validation_error = validate_category(category, allowed_categories)
 
         if validation_error:
             return validation_error
 
-        if category == "gas_or_petrol":
+        if category == "fossil_fuels":
             print(f"[OSM] WARN: Currently ignoring fuel type parameter (was '{fuel_type}')")
-            return await _find_fuel_near_place(self.valves, __user__, place, setting, __event_emitter__)
+            return await _find_fossil_fuel_near_place(self.valves, __user__, place, setting, __event_emitter__)
         elif category == "ev_fast_charging":
             return await _find_ev_fast_chargers_near_place_with_type(
                 self.valves, __user__, place, ev_charger_type, setting, __event_emitter__
@@ -2191,7 +2235,7 @@ class Tools:
         self,
         __user__: dict,
         place: str,
-        setting: str,
+        setting: UrbanSetting,
         category: str
     ) -> str:
         """
@@ -2202,7 +2246,7 @@ class Tools:
         an urban area, a suburb, or a rural location.
 
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :param setting: Urban-ness of the requested location. Controls search radius.
         :param category: The category of place, shop, etc to look up.
         :return: A list of nearby shops.
         """
