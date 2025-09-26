@@ -29,203 +29,223 @@ from pydantic import BaseModel, Field
 MAP_UI = """
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Search Results</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light dark">
+        <title>Search Results</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+         * {
+             margin: 0;
+             padding: 0;
+             box-sizing: border-box;
+         }
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
-            color: #333;
-            line-height: 1.6;
-            padding: 12px;
-        }
+         body {
+             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+             color: #333;
+             line-height: 1.6;
+             padding: 12px;
+         }
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
+         .container {
+             max-width: 1200px;
+             margin: 0 auto;
+         }
 
-        h1 {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #2c3e50;
-            text-align: center;
-            margin-bottom: 5px;
-        }
+         .results {
+             display: flex;
+             flex-direction: row;
+             flex-wrap: wrap;
+             gap: 50px;
+             align-items: start;
+             justify-content: space-between;
+         }
 
-        .subtitle {
-            font-size: 0.9rem;
-            color: #6c757d;
-            text-align: center;
-            margin-bottom: 15px;
-        }
+         h1 {
+             font-size: 2rem;
+             font-weight: 700;
+             color: #2c3e50;
+             text-align: center;
+             margin-bottom: 5px;
+         }
 
-        h2 {
-            font-size: 1.3rem;
-            color: #34495e;
-            margin: 20px 0 10px;
-            font-weight: 600;
-        }
+         .subtitle {
+             font-size: 0.9rem;
+             color: #6c757d;
+             text-align: center;
+             margin-bottom: 15px;
+         }
 
-        #map {
-            height: 400px;
-            margin-bottom: 15px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            border: 1px solid #ddd;
-        }
+         h2 {
+             font-size: 1.3rem;
+             color: #34495e;
+             margin: 20px 0 10px;
+             font-weight: 600;
+         }
 
-        #poi-list {
-            list-style-type: none;
-            padding: 0;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 8px;
-        }
+         .map-container {
+             flex: 1 auto;
+             min-width: 55%;
+         }
 
-        #poi-list li {
-            padding: 10px 12px;
-            margin: 0;
-            background-color: white;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-            border: 1px solid #e9ecef;
-            font-weight: 600;
-            color: #495057;
-            display: flex;
-            flex-direction: column;
-        }
+         #map {
+             height: 400px;
+             margin-bottom: 15px;
+             border-radius: 8px;
+             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+             border: 1px solid #ddd;
+         }
 
-        #poi-list li:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
-            background-color: #f8f9fa;
-            color: #2c3e50;
-        }
+         .poi-list-container {
+             flex: 2 auto;
+         }
 
-        #poi-list li.active {
-            background-color: #3498db;
-            color: white;
-            box-shadow: 0 3px 8px rgba(52, 152, 219, 0.2);
-        }
+         #poi-list {
+             list-style-type: none;
+         }
 
-        .poi-description {
-            font-size: 0.8rem;
-            color: #555; /* Slightly lighter than default */
-            margin-top: 4px;
-            font-weight: 400;
-        }
+         #poi-list li {
+             padding: 10px 12px;
+             margin: 0;
+             background-color: white;
+             border-radius: 6px;
+             cursor: pointer;
+             transition: all 0.2s ease;
+             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+             border: 1px solid #e9ecef;
+             font-weight: 600;
+             color: #495057;
+             display: flex;
+             flex-direction: column;
+         }
 
-        #poi-list li.active .poi-description {
-            color: rgba(255, 255, 255, 0.9); /* Lighter text for active state */
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Nearby {REPLACE_WITH_CATEGORY} results</h1>
-        <p class="subtitle">Data from OpenStreetMap</p>
+         #poi-list li:hover {
+             transform: translateY(-2px);
+             box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
+             background-color: #f8f9fa;
+             color: #2c3e50;
+         }
 
-        <div id="map"></div>
+         #poi-list li.active {
+             background-color: #3498db;
+             color: white;
+             box-shadow: 0 3px 8px rgba(52, 152, 219, 0.2);
+         }
 
-        <h2>List</h2>
-        <ul id="poi-list"></ul>
-    </div>
+         .poi-description {
+             font-size: 0.8rem;
+             color: #555; /* Slightly lighter than default */
+             margin-top: 4px;
+             font-weight: 400;
+         }
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-        // POI data with coordinates and names
-        // [ { name, coords, lat, lon, description } ]
-        const poiData = {REPLACE_WITH_POI_RESULTS};
+         #poi-list li.active .poi-description {
+             color: rgba(255, 255, 255, 0.9); /* Lighter text for active state */
+         }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Map Results for {REPLACE_WITH_CATEGORY}</h1>
+            <p class="subtitle">Data from OpenStreetMap</p>
 
-        // Function to create the map
-        function createMap(poiData) {
-            // Create map centered on first POI
-            const map = L.map('map');
-            if (poiData.length > 0) map.setView([poiData[0].lat, poiData[0].lon], 12);
+            <div class="results">
+                <div class="map-container">
+                    <h2>Map</h2>
+                    <div id="map"></div>
+                </div>
 
-            // Add OpenStreetMap tiles
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            }).addTo(map);
+                <div class="poi-list-container">
+                    <h2>POI List</h2>
+                    <ul id="poi-list"></ul>
+                </div>
+            </div>
+        </div>
 
-            // Store markers and popup references
-            const markers = [];
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+         // POI data with coordinates and names
+         // [ { name, coords, lat, lon, description } ]
+         const poiData = {REPLACE_WITH_POI_RESULTS};
 
-            // Add markers to map and create list items dynamically
-            poiData.forEach((poi, index) => {
-                const marker = L.marker([poi.lat, poi.lon]).addTo(map);
-                const osmLink = `https://www.openstreetmap.org/${poi.osm_type}/${poi.osm_id}`
-                const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`
-                const address = `<p>${poi.address}</p>`
-                const description = `<p>${poi.description}</p>`
-                const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`
+         // Function to create the map
+         function createMap(poiData) {
+             // Create map centered on first POI
+             const map = L.map('map');
+             if (poiData.length > 0) map.setView([poiData[0].lat, poiData[0].lon], 12);
 
-                marker.bindPopup(`${header}${address}${description}${coords}`);
-                markers.push(marker);
+             // Add OpenStreetMap tiles
+             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                 attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+             }).addTo(map);
 
-                // Create list item dynamically
-                const listItem = document.createElement('li');
+             // Store markers and popup references
+             const markers = [];
 
-                listItem.innerHTML = `
-                    <span>${poi.name}</span>
-                    <span class="poi-description">${poi.description}</span>
-                `;
-                listItem.onclick = () => focusOnMarker(index, map, markers);
-                listItem.classList.add('poi-item');
+             // Add markers to map and create list items dynamically
+             poiData.forEach((poi, index) => {
+                 const marker = L.marker([poi.lat, poi.lon]).addTo(map);
+                 const osmLink = `https://www.openstreetmap.org/${poi.osm_type}/${poi.osm_id}`
+                 const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`
+                 const address = `<p>${poi.address}</p>`
+                 const description = `<p>${poi.description}</p>`
+                 const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`
 
-                // Add to list
-                document.getElementById('poi-list').appendChild(listItem);
-            });
+                 marker.bindPopup(`${header}${address}${description}${coords}`);
+                 markers.push(marker);
 
-            return { map, markers };
-        }
+                 // Create list item dynamically
+                 const listItem = document.createElement('li');
 
-        // Function to focus on a specific marker
-        function focusOnMarker(index, map, markers) {
-            const marker = markers[index];
+                 listItem.innerHTML = `
+                     <span>${poi.name}</span>
+                     <span class="poi-description">${poi.description}</span>`;
+                 listItem.onclick = () => focusOnMarker(index, map, markers);
+                 listItem.classList.add('poi-item');
 
-            // Fit map to show all markers with reduced padding
-            const bounds = poiData.map(poi => L.latLng([ poi.lat, poi.lon ]));
-            map.fitBounds(bounds, { padding: [15, 15], maxZoom: 13 });
+                 // Add to list
+                 document.getElementById('poi-list').appendChild(listItem);
+             });
 
-            // Open popup for selected marker
-            marker.openPopup();
+             return { map, markers };
+         }
 
-            // Update active state in list
-            updateActiveListItem(index);
-        }
+         // Function to focus on a specific marker
+         function focusOnMarker(index, map, markers) {
+             const marker = markers[index];
 
-        // Function to update active list item
-        function updateActiveListItem(index) {
-            const listItems = document.querySelectorAll('#poi-list li');
-            listItems.forEach((item, i) => {
-                if (i === index) {
-                    item.classList.add('active');
-                } else {
-                    item.classList.remove('active');
-                }
-            });
-        }
+             // Fit map to show all markers with reduced padding
+             const bounds = poiData.map(poi => L.latLng([ poi.lat, poi.lon ]));
+             map.fitBounds(bounds, { padding: [15, 15], maxZoom: 13 });
 
-        // Initialize map and markers
-        const { map, markers } = createMap(poiData);
+             // Open popup for selected marker
+             marker.openPopup();
 
-        // Initialize with first POI selected
-        updateActiveListItem(0);
-    </script>
-</body>
+             // Update active state in list
+             updateActiveListItem(index);
+         }
+
+         // Function to update active list item
+         function updateActiveListItem(index) {
+             const listItems = document.querySelectorAll('#poi-list li');
+             listItems.forEach((item, i) => {
+                 if (i === index) {
+                     item.classList.add('active');
+                 } else {
+                     item.classList.remove('active');
+                 }
+             });
+         }
+
+         // Initialize map and markers
+         const { map, markers } = createMap(poiData);
+
+         // Initialize with first POI selected
+         updateActiveListItem(0);
+        </script>
+    </body>
 </html>
 """
 
