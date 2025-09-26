@@ -77,6 +77,95 @@ ReligionCategory: TypeAlias = Literal[
     'multifaith', 'humanist', 'atheist', 'null', 'laica'
 ]
 
+from typing import Literal, TypeAlias
+
+DenominationCategory: TypeAlias = Literal[
+    'any_denomination',
+
+    # Buddhist
+    "buddhist|mahayana", "buddhist|gelug", "buddhist|jishu", "buddhist|jodo_shinshu",
+    "buddhist|jodo_shu", "buddhist|nichiren", "buddhist|nyingma", "buddhist|obaku",
+    "buddhist|pure_land", "buddhist|rinzai", "buddhist|risshu", "buddhist|shingon_shu",
+    "buddhist|soto", "buddhist|tiantai", "buddhist|tibetan","buddhist|vajrayana", "buddhist|won",
+    "buddhist|yogacara", "buddhist|yuzu_nembutsu", "buddhist|zen", "buddhist|theravada",
+    "buddhist|thai_mahanikaya", "buddhist|thai_thammayut",
+
+    # Christian
+    "christian|catholic", "christian|armenian_catholic", "christian|chaldean_catholic",
+    "christian|coptic_catholic", "christian|eritrean_catholic", "christian|ethiopian_catholic",
+    "christian|greek_catholic", "christian|hungarian_greek_catholic", "christian|maronite",
+    "christian|polish_catholic", "christian|roman_catholic", "christian|romanian_catholic",
+    "christian|syriac_catholic", "christian|syro-malabar_catholic", "christian|ukrainian_greek_catholic",
+    "christian|orthodox", "christian|antiochian_orthodox", "christian|armenian_apostolic",
+    "christian|bulgarian_orthodox", "christian|eritrean_orthodox", "christian|ethiopian_orthodox",
+    "christian|coptic_orthodox", "christian|georgian_orthodox", "christian|greek_orthodox",
+    "christian|macedonian_orthodox", "christian|old_believers", "christian|polish_orthodox",
+    "christian|romanian_orthodox", "christian|russian_orthodox", "christian|serbian_orthodox",
+    "christian|syriac_orthodox", "christian|ukrainian_orthodox", "christian|protestant",
+    "christian|adventist", "christian|anabaptist", "christian|anglican", "christian|baptist",
+    "christian|disciples_of_christ", "christian|episcopal", "christian|evangelical",
+    "christian|evangelical_covenant", "christian|exclusive_brethren", "christian|lutheran",
+    "christian|mennonite", "christian|methodist", "christian|moravian", "christian|pentecostal",
+    "christian|presbyterian", "christian|quaker", "christian|reformed", "christian|uniting",
+    "christian|polish_national_catholic", "christian|african_methodist_episcopal",
+    "christian|african_methodist_episcopal_zion", "christian|alliance", "christian|apostolic_faith",
+    "christian|assemblies_of_god", "christian|brethren_in_christ", "christian|calvinistic_methodist",
+    "christian|catholic_apostolic", "christian|church_of_god_in_christ", "christian|church_of_scotland",
+    "christian|churches_of_christ", "christian|czechoslovak_hussite", "christian|dutch_reformed",
+    "christian|evangelical_free_church_of_america", "christian|evangelical_lutheran",
+    "christian|evangelical_free_church_of_france", "christian|foursquare",
+    "christian|free_church_of_scotland", "christian|living_waters_church", "christian|mission_covenant_church_of_sweden",
+    "christian|mormon", "christian|latter_day_saints", "christian|nazarene",
+    "christian|new_frontiers", "christian|orthodox_presbyterian_church", "christian|pkn", "christian|remonstrant",
+    "christian|salvation_army", "christian|scottish_episcopal", "christian|seventh_day_adventist",
+    "christian|strict_baptist", "christian|temple_society_australia", "christian|united",
+    "christian|united_free_church_of_scotland", "christian|united_reformed", "christian|united_methodist",
+    "christian|united_church_of_christ", "christian|welsh_baptist", "christian|welsh_independent",
+    "christian|apostolic", "christian|assyrian",
+    "christian|catholic_mariavite", "christian|bosnian_church", "christian|charismatic",
+    "christian|christian_community", "christian|christ_scientist", "christian|church_of_christ",
+    "christian|congregational", "christian|ecumenical", "christian|fsspx", "christian|harrist",
+    "christian|iglesia_ni_cristo", "christian|jehovahs_witness", "christian|kimbanguist",
+    "christian|la_luz_del_mundo", "christian|liberal_catholic", "christian|mariavite",
+    "christian|messianic_jewish", "christian|new_apostolic", "christian|nondenominational",
+    "christian|old_catholic", "christian|philippine_independent", "christian|shizmatic",
+    "christian|simultaneum", "christian|spiritist",
+
+    # Hindu
+    "hindu|shaktism", "hindu|hare_krishna", "hindu|vaishnavism", "hindu|shaivism",
+    "hindu|smartism", "hindu|ganpatya", "hindu|warkari", "hindu|dattatreya",
+
+    # Islamic
+    "muslim|ahmadiyya", "muslim|alevi", "muslim|bektashi", "muslim|ibadi",
+    "muslim|ismaili", "muslim|shia", "muslim|sunni", "muslim|sufi",
+
+    # Jain
+    "jain|digambara", "jain|svetambara",
+
+    # Jewish
+    "jewish|unaffiliated", "jewish|ashkenazi", "jewish|buchari",
+    "jewish|conservative", "jewish|hasidic", "jewish|kabbalistic",
+    "jewish|karaite", "jewish|lubavitch", "jewish|mizrachi",
+    "jewish|modern_orthodox", "jewish|neo_orthodox", "jewish|orthodox",
+    "jewish|reconstructionist", "jewish|reform", "jewish|progressive",
+    "jewish|liberal", "jewish|samaritan", "jewish|sephardi",
+    "jewish|traditional", "jewish|unity",
+
+    # Pagan
+    "pagan|asatru", "pagan|baltic", "pagan|celtic", "pagan|greco-roman",
+    "pagan|slavic", "pagan|wicca",
+
+    # Sikh
+    "sikh|khalsa", "sikh|akali_nihang", "sikh|giani_samparda", "sikh|nirmala_sect",
+    "sikh|sewapanthi", "sikh|udasi", "sikh|ramgarhia", "sikh|radha_soami",
+    "sikh|namdhari", "sikh|nirankari", "sikh|nanakpanthi", "sikh|ramraiyas",
+
+    # Taoist
+    "taoist|quanzhen", "taoist|zhengyi",
+
+    # Zoroastrian
+    "zoroastrian|irani", "zoroastrian|parsi",
+]
 
 
 ### temp todo list
@@ -1569,7 +1658,7 @@ class OsmSearcher:
 async def do_osm_search(
         valves, user_valves, place, tags,
         category="POIs", event_emitter=None, limit=5, radius=4000,
-        setting='urban', not_tag_groups={}
+        setting='urban', not_tag_groups={}, radius_multiplier=1
 ):
     # handle breaking 1.0 change, in case of old Nominatim valve settings.
     if valves.nominatim_url.endswith("/search"):
@@ -1591,7 +1680,7 @@ async def do_osm_search(
         }
 
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place} ({setting} setting)")
-    radius = radius * setting_to_multiplier(setting)
+    radius = radius * setting_to_multiplier(setting) * radius_multiplier
     events = OsmEventEmitter(event_emitter)
     searcher = OsmSearcher(valves, user_valves, events)
     search = await searcher.search_nearby(place, tags, limit=limit, radius=radius,
@@ -2163,27 +2252,55 @@ class Tools:
     async def find_place_of_worship_near_place(
             self, __user__: dict, place: str,
             religion: ReligionCategory,
+            denomination: DenominationCategory,
+            is_common_for_location: bool,
             setting: UrbanSetting,
             __event_emitter__
     ) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
         given place or address. For setting, specify if the place is an urban area,
-        a suburb, or a rural location.
+        a suburb, or a rural location. If searching for a denomination, the denomination must be part of the
+        given religion. If NOT searching for any specific denomination, use the special 'any_denomination'
+        value. If a religion is specified as not uncommon in the requested area, the search radius
+        will be greatly increased.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param religion: Narrow the search to a particular religion. Use "any_religion" to search for all places of worship.
+        :param denomination: Narrow search to denomination of particular religion. Denomination must match religion.
+        :param is_common_for_location: Whether or not the religion or denomination is rare in the requested area.
         :param setting: Urban-ness of the requested location. Controls search radius.
         :return: A list of nearby places of worship, if found.
         """
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
 
+        # by default, look for all places of worship.
         tags = ["amenity=place_of_worship"]
+
+        # searching for a specific religion?
         if religion != "any_religion" and religion is not None:
             tags = [["amenity=place_of_worship", f"religion={religion}"]]
 
+
+        # or even a specific religion + denomination?
+        if denomination != 'any_denomination' and denomination is not None:
+            split = denomination.split("|")
+            if len(split) != 2 or '|' not in denomination:
+                raise ValueError("Denomination must be specified as 'religion|denomination'")
+
+            denom_religion = split[0]
+            search_by_denom = split[1]
+
+            if denom_religion != religion:
+                raise ValueError(f'Denomination specified. religion parameter must be: {denom_religion}')
+
+            # now we can actually search by religion + denom
+            tags = [["amenity=place_of_worship", f"religion={religion}", f"denomination={search_by_denom}"]]
+
+        radius_multiplier = 1 if is_common_for_location else 2.5
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
+                                   radius_multiplier=radius_multiplier)
 
     async def find_education_by_category_near_place(
         self, place: str, category: EducationCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
