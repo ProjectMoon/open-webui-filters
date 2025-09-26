@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 3.2.1
+version: 3.2.2
 license: AGPL-3.0+
 required_open_webui_version: 0.6.30
 requirements: openrouteservice, pygments
@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 # 2. Refactor nominatim displayname/address thing into separate method.
 # 3. Separate result post-processing, fallback, ranking into clearer methods.
 # 4. Separate Nominatim searching and Overpass searching into two separate classes?
+# 5. remove direct use of valves in OsmNavigator.
 
 #####################################################
 # Citation CSS
@@ -488,7 +489,7 @@ class OsmUtils:
         addr = f"at {thing['address']}" if thing['address'] != 'unknown' else 'nearby'
 
         osm_link = OsmUtils.create_osm_link(lat, lon)
-        json_data = OsmUtils.pretty_print_thing_json(original_thing)
+        json_data = OsmUtils.pretty_print_thing_json(thing)
         website = thing.get('website', osm_link)
 
         document = (f"<style>{HIGHLIGHT_CSS}</style>"
@@ -740,7 +741,7 @@ class OsmParser:
         nav_distance: Optional[float] = thing.get('nav_distance', None)
         opening_hours: Optional[str] = tags.get('opening_hours', None)
         website: Optional[str] = get_or_none(
-            original_thing['tags'], "operator:website", "website", "brand:website"
+            tags, "operator:website", "website", "brand:website"
         )
 
         # use the navigation distance if it's present. but if not, set to
@@ -793,22 +794,22 @@ class OsmParser:
                                  if use_distance and 'nav_distance' in friendly_thing
                                  else "unavailable")
 
-            # remove distances from the raw OSM json.
-            friendly_thing.pop('nav_distance', None)
-            friendly_thing.pop('distance', None)
+            # prepare friendly thing for final result entry. some
+            # values are on the "raw" JSON from earlier in the search
+            # process.
+            thing.pop('nav_distance', None)
+            thing.pop('distance', None)
+            citation_id = thing.pop('citation_id', None)
 
-            entry_json = {
-                "latitude": friendly_thing['lat'],
-                "longitude": friendly_thing['lon'],
-                "address": friendly_thing['address'],
-                "amenity_type": friendly_thing['amenity_type'],
+            friendly_thing.update({
                 "geographical_distance": hv_distance_json,
                 "travel_distance": trv_distance_json,
                 "openstreetmap_link": map_link,
+                "citation_id": citation_id,
                 "raw_osm_json": thing
-            }
+            })
 
-            entries.append(entry_json)
+            entries.append(friendly_thing)
 
         if len(entries) == 0:
             return None
@@ -864,10 +865,10 @@ class OsmCache:
 
 class OrsRouter:
     def __init__(
-        self, valves: Tools.Valves, user_valves: Optional[Tools.UserValves], event_emitter=None,
+        self, valves, user_valves, events: OsmEventEmitter
     ):
         self.cache = OsmCache()
-        self.event_emitter = event_emitter
+        self.events = events
 
         if valves.ors_api_key is not None and valves.ors_api_key != "":
             if valves.ors_instance is not None:
@@ -936,7 +937,7 @@ class OrsRouter:
         return route.get('summary', {}).get('distance', None) if route else None
 
 class OsmSearcher:
-    def __init__(self, valves: Tools.Valves, user_valves: Optional[Tools.UserValves], event_emitter):
+    def __init__(self, valves, user_valves, event_emitter):
         self.events = event_emitter
 
         # config settings
@@ -1520,14 +1521,16 @@ async def do_osm_search(
 
 class OsmNavigator:
     def __init__(
-        self, valves, user_valves: Optional[dict], event_emitter,
+        self, valves, user_valves: Optional[dict], events: OsmEventEmitter,
     ):
-        self.events = event_emitter
+        self.valves = valves
+        self.user_valves = user_valves
+        self.events = events
 
     async def navigate(self, start_place: str, destination_place: str):
         await self.events.navigating(done=False)
-        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
-        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
+        searcher = OsmSearcher(self.valves, self.user_valves, self.events)
+        router = OrsRouter(self.valves, self.user_valves, self.events)
 
         try:
             start = await searcher.nominatim_search(start_place, limit=1)
@@ -1882,7 +1885,8 @@ class Tools:
         """
         print(f"[OSM] Searching for info on [{address_or_place}].")
         events = OsmEventEmitter(__event_emitter__)
-        searcher = OsmSearcher(self.valves, self.user_valves, events_)
+        searcher = OsmSearcher(self.valves, self.user_valves, events)
+
         try:
             result = await searcher.nominatim_search(address_or_place, limit=5)
             if result:
