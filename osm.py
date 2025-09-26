@@ -998,6 +998,30 @@ class OsmUtils:
 # OSM Result Parsing
 #####################################################
 
+# For each search category, we may want to add additional tags
+# directly from the raw OSM data for a given search result. This is a
+# map of search category as defined by the tool functions to OSM tag
+# names. If a tag is in the list for the category, that tag will be
+# included in search results' additional_info field (assuming it
+# exists on the OSM entity).
+#
+# Tag values ending with a :* have a special meaning. The tool will
+# find all "sub-tags" that begin with the prefix. For example,
+# "socket:*" will find "socket:type2", "socket:type2:output",
+# "socket:type1" and so on.
+RAW_DATA_BY_CATEGORY = {
+    # food and drink
+    "sit_down_restaurants": {"cuisine", "reservation", "cocktails"},
+    "fast_food": {"cuisine"},
+    "cafe_or_bakery": {"cuisine"},
+    "bars_and_pubs": {"cocktails", "reservation"},
+
+    # fuel etc
+    "ev_fast_charging": {"operator", "fee", "socket:*", "payment:*", "authentication:*",
+                         "motorcar", "truck"},
+
+}
+
 class OsmParser:
     """All result parsing-related functionality in one place."""
 
@@ -1101,6 +1125,31 @@ class OsmParser:
         return None
 
     @staticmethod
+    def extract_raw_data(category: str, thing: dict) -> dict:
+        tags_to_extract = RAW_DATA_BY_CATEGORY.get(category, None)
+
+        if not tags_to_extract:
+            return {}
+
+        # loop through all tags in thing. if regular tag to extract,
+        # add to dict. if wildcard, do a beginswith check.
+        additiona_info = {}
+        tags: dict = thing.get('tags', {})
+
+        for tag_name in tags_to_extract:
+            if tag_name.endswith(':*'):
+                tag_prefix = tag_name.split(':*')[0]
+                for tag, value in tags:
+                    if tag.startswith(tag_prefix):
+                        additional_info[tag] = value
+            else:
+                for tag, value in tags:
+                    if tag == tag_name:
+                        additional_info[tag] = value
+
+    return additional_info
+
+    @staticmethod
     def parse_and_validate_thing(thing: dict) -> Optional[dict]:
         """
         Parse an OSM result (node or post-processed way) and make it
@@ -1159,6 +1208,8 @@ class OsmParser:
         friendly_thing['amenity_type'] = amenity_type if amenity_type else "unknown"
         friendly_thing['opening_hours'] = opening_hours if opening_hours else "not recorded"
         friendly_thing['website'] = website if website else osm_link
+        friendly_thing['phone_number'] = thing.get('phone', 'unknown')
+
         return friendly_thing
 
     def convert_and_validate_results(
