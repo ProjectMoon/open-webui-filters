@@ -2,9 +2,9 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 3.2.1
+version: 4.0.0
 license: AGPL-3.0+
-required_open_webui_version: 0.6.30
+required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
 """
 import itertools
@@ -13,6 +13,7 @@ import math
 import requests
 import uuid
 
+from fastapi.responses import HTMLResponse
 from pygments import highlight
 from pygments.lexers import JsonLexer
 from pygments.formatters import HtmlFormatter
@@ -22,8 +23,397 @@ from openrouteservice.directions import directions as ors_directions
 
 from urllib.parse import urljoin
 from operator import itemgetter
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Literal, TypeAlias
 from pydantic import BaseModel, Field
+
+#####################################################
+# Map UI Integration
+#####################################################
+
+NWR: TypeAlias = Literal['node', 'way', 'relation']
+
+POICategory: TypeAlias = Literal[
+    'Groceries', 'Recreation', 'Restaurants & Bars', 'Travel & Tourism',
+    'Healthcare', 'Education & Schools', 'Fuel & EV Charging',
+    'Religious Locations'
+]
+
+class OsmPOI(BaseModel):
+    """Represents a Point of Interest found during map search."""
+    name: str = Field(description="Name of the Point of Interest.")
+    address: Optional[str] = Field(description="Address of the Point of Interest.")
+    description: str = Field(description="Description of the Point of Interest.")
+    lat: float = Field(description="Latitude of the Point of Interest.")
+    lon: float = Field(description="Longitude of the Point of Interest.")
+    osm_id: str = Field(description="OpenStreetMap ID of the Point of Interest.")
+    osm_type: NWR = Field(description="OpenStreetMap entity type of the Point of Interest.")
+    pass
+
+MAP_UI = """
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light dark">
+        <title>Search Results</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+         * {
+             margin: 0;
+             padding: 0;
+             box-sizing: border-box;
+         }
+
+         body {
+             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+             color: #333;
+             line-height: 1.6;
+             padding: 12px;
+         }
+
+         .container {
+             max-width: 1200px;
+             margin: 0 auto;
+         }
+
+         .results {
+             display: flex;
+             flex-direction: row;
+             flex-wrap: wrap;
+             gap: 50px;
+             align-items: start;
+             justify-content: space-between;
+         }
+
+         h1 {
+             font-size: 2rem;
+             font-weight: 700;
+             color: #2c3e50;
+             text-align: center;
+             margin-bottom: 5px;
+         }
+
+         .subtitle {
+             font-size: 0.9rem;
+             color: #6c757d;
+             text-align: center;
+             margin-bottom: 15px;
+         }
+
+         h2 {
+             font-size: 1.3rem;
+             color: #34495e;
+             margin: 20px 0 10px;
+             font-weight: 600;
+         }
+
+         .map-container {
+             flex: 1 auto;
+             min-width: 55%;
+         }
+
+         #map {
+             height: 400px;
+             margin-bottom: 15px;
+             border-radius: 8px;
+             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+             border: 1px solid #ddd;
+         }
+
+         .poi-list-container {
+             flex: 2 auto;
+         }
+
+         #poi-list {
+             list-style-type: none;
+         }
+
+         #poi-list li {
+             padding: 10px 12px;
+             margin: 0;
+             background-color: white;
+             border-radius: 6px;
+             cursor: pointer;
+             transition: all 0.2s ease;
+             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+             border: 1px solid #e9ecef;
+             font-weight: 600;
+             color: #495057;
+             display: flex;
+             flex-direction: column;
+         }
+
+         #poi-list li:hover {
+             transform: translateY(-2px);
+             box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
+             background-color: #f8f9fa;
+             color: #2c3e50;
+         }
+
+         #poi-list li.active {
+             background-color: #3498db;
+             color: white;
+             box-shadow: 0 3px 8px rgba(52, 152, 219, 0.2);
+         }
+
+         .poi-description {
+             font-size: 0.8rem;
+             color: #555; /* Slightly lighter than default */
+             margin-top: 4px;
+             font-weight: 400;
+         }
+
+         #poi-list li.active .poi-description {
+             color: rgba(255, 255, 255, 0.9); /* Lighter text for active state */
+         }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Map Results for {REPLACE_WITH_CATEGORY}</h1>
+            <p class="subtitle">Data from OpenStreetMap</p>
+
+            <div class="results">
+                <div class="map-container">
+                    <h2>Map</h2>
+                    <div id="map"></div>
+                </div>
+
+                <div class="poi-list-container">
+                    <h2>POI List</h2>
+                    <ul id="poi-list"></ul>
+                </div>
+            </div>
+        </div>
+
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+         // POI data with coordinates and names
+         // [ { name, coords, lat, lon, description } ]
+         const poiData = {REPLACE_WITH_POI_RESULTS};
+
+         // Function to create the map
+         function createMap(poiData) {
+             // Create map centered on first POI
+             const map = L.map('map');
+             if (poiData.length > 0) map.setView([poiData[0].lat, poiData[0].lon], 12);
+
+             // Add OpenStreetMap tiles
+             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                 attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+             }).addTo(map);
+
+             // Store markers and popup references
+             const markers = [];
+
+             // Add markers to map and create list items dynamically
+             poiData.forEach((poi, index) => {
+                 const marker = L.marker([poi.lat, poi.lon]).addTo(map);
+                 const osmLink = `https://www.openstreetmap.org/${poi.osm_type}/${poi.osm_id}`
+                 const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`
+                 const address = `<p>${poi.address}</p>`
+                 const description = `<p>${poi.description}</p>`
+                 const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`
+
+                 marker.bindPopup(`${header}${address}${description}${coords}`);
+                 markers.push(marker);
+
+                 // Create list item dynamically
+                 const listItem = document.createElement('li');
+
+                 listItem.innerHTML = `
+                     <span>${poi.name}</span>
+                     <span class="poi-description">${poi.description}</span>`;
+                 listItem.onclick = () => focusOnMarker(index, map, markers);
+                 listItem.classList.add('poi-item');
+
+                 // Add to list
+                 document.getElementById('poi-list').appendChild(listItem);
+             });
+
+             return { map, markers };
+         }
+
+         // Function to focus on a specific marker
+         function focusOnMarker(index, map, markers) {
+             const marker = markers[index];
+
+             // Fit map to show all markers with reduced padding
+             const bounds = poiData.map(poi => L.latLng([ poi.lat, poi.lon ]));
+             map.fitBounds(bounds, { padding: [15, 15], maxZoom: 13 });
+
+             // Open popup for selected marker
+             marker.openPopup();
+
+             // Update active state in list
+             updateActiveListItem(index);
+         }
+
+         // Function to update active list item
+         function updateActiveListItem(index) {
+             const listItems = document.querySelectorAll('#poi-list li');
+             listItems.forEach((item, i) => {
+                 if (i === index) {
+                     item.classList.add('active');
+                 } else {
+                     item.classList.remove('active');
+                 }
+             });
+         }
+
+         // Initialize map and markers
+         const { map, markers } = createMap(poiData);
+
+         // Initialize with first POI selected
+         updateActiveListItem(0);
+        </script>
+    </body>
+</html>
+"""
+
+#####################################################
+# Category Type Aliases
+#####################################################
+
+UrbanSetting: TypeAlias = Literal['urban', 'suburban', 'rural']
+
+StoreCategory: TypeAlias = Literal[
+    'groceries', 'convenience', 'alcohol', 'drugs',
+    'cannabis', 'electronics', 'electrical', 'hardware', 'diy'
+]
+
+RecreationCategory: TypeAlias = Literal[
+    'swimming', 'playgrounds', 'amusement', 'sports'
+]
+
+EateryCategory: TypeAlias = Literal[
+    'sit_down_restaurants', 'fast_food', 'cafe_or_bakery',
+    'bars_and_pubs'
+]
+
+TravelCategory: TypeAlias = Literal[
+    'tourist_attractions', 'accommodation', 'bike_rentals',
+    'car_rentals', 'public_transport'
+]
+
+HealthcareCategory: TypeAlias = Literal[
+    'doctor', 'hospital', 'pharmacy'
+]
+
+EducationCategory: TypeAlias = Literal[
+    'schools', 'universities_and_colleges', 'libraries'
+]
+
+FuelCategory: TypeAlias = Literal['fossil_fuels',  'ev_fast_charging']
+FuelTypeCategory: TypeAlias = Literal['petrol', 'diesel', 'all']
+EVChargerCategory: TypeAlias = Literal[
+    'chademo', 'chademo3', 'chaoji', 'ccs2',
+    'ccs1', 'gb/t', 'nacs', 'all'
+]
+
+# Religions from the OSM wiki. Some make use of the denomination tag.
+# Others do not. any_religion is a special "category" that forces the
+# tool to search for any place of worship amenity.
+ReligionCategory: TypeAlias = Literal[
+    'any_religion', 'buddhist', 'christian', 'hindu', 'jain', 'jewish', 'muslim',
+    'pagan', 'shinto', 'sikh', 'taoist', 'zoroastrian',
+    'ancestor', 'animist', 'antoinist', 'bahai', 'benzhu',
+    'caodaism', 'chinese_folk', 'confucian', 'shamanic', 'scientologist',
+    'self-realization_fellowship', 'spiritualist', 'tenrikyo',
+    'unitarian_universalist','vietnamese_folk', 'voodoo',
+    'yazidi',
+    'multifaith', 'humanist', 'atheist', 'null', 'laica'
+]
+
+DenominationCategory: TypeAlias = Literal[
+    # Forcibly search for any denomination within the specified
+    # religion.
+    'any_denomination',
+
+    # Buddhist
+    "buddhist|mahayana", "buddhist|gelug", "buddhist|jishu", "buddhist|jodo_shinshu",
+    "buddhist|jodo_shu", "buddhist|nichiren", "buddhist|nyingma", "buddhist|obaku",
+    "buddhist|pure_land", "buddhist|rinzai", "buddhist|risshu", "buddhist|shingon_shu",
+    "buddhist|soto", "buddhist|tiantai", "buddhist|tibetan","buddhist|vajrayana", "buddhist|won",
+    "buddhist|yogacara", "buddhist|yuzu_nembutsu", "buddhist|zen", "buddhist|theravada",
+    "buddhist|thai_mahanikaya", "buddhist|thai_thammayut",
+
+    # Christian
+    "christian|catholic", "christian|armenian_catholic", "christian|chaldean_catholic",
+    "christian|coptic_catholic", "christian|eritrean_catholic", "christian|ethiopian_catholic",
+    "christian|greek_catholic", "christian|hungarian_greek_catholic", "christian|maronite",
+    "christian|polish_catholic", "christian|roman_catholic", "christian|romanian_catholic",
+    "christian|syriac_catholic", "christian|syro-malabar_catholic", "christian|ukrainian_greek_catholic",
+    "christian|orthodox", "christian|antiochian_orthodox", "christian|armenian_apostolic",
+    "christian|bulgarian_orthodox", "christian|eritrean_orthodox", "christian|ethiopian_orthodox",
+    "christian|coptic_orthodox", "christian|georgian_orthodox", "christian|greek_orthodox",
+    "christian|macedonian_orthodox", "christian|old_believers", "christian|polish_orthodox",
+    "christian|romanian_orthodox", "christian|russian_orthodox", "christian|serbian_orthodox",
+    "christian|syriac_orthodox", "christian|ukrainian_orthodox", "christian|protestant",
+    "christian|adventist", "christian|anabaptist", "christian|anglican", "christian|baptist",
+    "christian|disciples_of_christ", "christian|episcopal", "christian|evangelical",
+    "christian|evangelical_covenant", "christian|exclusive_brethren", "christian|lutheran",
+    "christian|mennonite", "christian|methodist", "christian|moravian", "christian|pentecostal",
+    "christian|presbyterian", "christian|quaker", "christian|reformed", "christian|uniting",
+    "christian|polish_national_catholic", "christian|african_methodist_episcopal",
+    "christian|african_methodist_episcopal_zion", "christian|alliance", "christian|apostolic_faith",
+    "christian|assemblies_of_god", "christian|brethren_in_christ", "christian|calvinistic_methodist",
+    "christian|catholic_apostolic", "christian|church_of_god_in_christ", "christian|church_of_scotland",
+    "christian|churches_of_christ", "christian|czechoslovak_hussite", "christian|dutch_reformed",
+    "christian|evangelical_free_church_of_america", "christian|evangelical_lutheran",
+    "christian|evangelical_free_church_of_france", "christian|foursquare",
+    "christian|free_church_of_scotland", "christian|living_waters_church", "christian|mission_covenant_church_of_sweden",
+    "christian|mormon", "christian|nazarene", "christian|new_frontiers", "christian|orthodox_presbyterian_church",
+    "christian|pkn", "christian|remonstrant", "christian|salvation_army", "christian|scottish_episcopal",
+    "christian|seventh_day_adventist", "christian|strict_baptist", "christian|temple_society_australia",
+    "christian|united", "christian|united_free_church_of_scotland", "christian|united_reformed",
+    "christian|united_methodist", "christian|united_church_of_christ", "christian|welsh_baptist",
+    "christian|welsh_independent", "christian|apostolic", "christian|assyrian",
+    "christian|catholic_mariavite", "christian|bosnian_church", "christian|charismatic",
+    "christian|christian_community", "christian|christ_scientist", "christian|church_of_christ",
+    "christian|congregational", "christian|ecumenical", "christian|fsspx", "christian|harrist",
+    "christian|iglesia_ni_cristo", "christian|jehovahs_witness", "christian|kimbanguist",
+    "christian|la_luz_del_mundo", "christian|liberal_catholic", "christian|mariavite",
+    "christian|messianic_jewish", "christian|new_apostolic", "christian|nondenominational",
+    "christian|old_catholic", "christian|philippine_independent", "christian|shizmatic",
+    "christian|simultaneum", "christian|spiritist",
+
+    # Hindu
+    "hindu|shaktism", "hindu|hare_krishna", "hindu|vaishnavism", "hindu|shaivism",
+    "hindu|smartism", "hindu|ganpatya", "hindu|warkari", "hindu|dattatreya",
+
+    # Islamic
+    "muslim|ahmadiyya", "muslim|alevi", "muslim|bektashi", "muslim|ibadi",
+    "muslim|ismaili", "muslim|shia", "muslim|sunni", "muslim|sufi",
+
+    # Jain
+    "jain|digambara", "jain|svetambara",
+
+    # Jewish
+    "jewish|unaffiliated", "jewish|ashkenazi", "jewish|buchari",
+    "jewish|conservative", "jewish|hasidic", "jewish|kabbalistic",
+    "jewish|karaite", "jewish|lubavitch", "jewish|mizrachi",
+    "jewish|modern_orthodox", "jewish|neo_orthodox", "jewish|orthodox",
+    "jewish|reconstructionist", "jewish|reform", "jewish|progressive",
+    "jewish|liberal", "jewish|samaritan", "jewish|sephardi",
+    "jewish|traditional", "jewish|unity",
+
+    # Pagan
+    "pagan|asatru", "pagan|baltic", "pagan|celtic", "pagan|greco-roman",
+    "pagan|slavic", "pagan|wicca",
+
+    # Sikh
+    "sikh|khalsa", "sikh|akali_nihang", "sikh|giani_samparda", "sikh|nirmala_sect",
+    "sikh|sewapanthi", "sikh|udasi", "sikh|ramgarhia", "sikh|radha_soami",
+    "sikh|namdhari", "sikh|nirankari", "sikh|nanakpanthi", "sikh|ramraiyas",
+
+    # Taoist
+    "taoist|quanzhen", "taoist|zhengyi",
+
+    # Zoroastrian
+    "zoroastrian|irani", "zoroastrian|parsi",
+]
 
 #####################################################
 # Citation CSS
@@ -134,6 +524,10 @@ CITATION_INSTRUCTIONS = [
     "Always use inline citations for information relating to a result. "
 ]
 
+#####################################################
+# Global Utils
+#####################################################
+
 def chunk_list(input_list, chunk_size):
     it = iter(input_list)
     return list(
@@ -144,6 +538,28 @@ def to_lookup(thing) -> Optional[str]:
     lookup_type = NOMINATIM_LOOKUP_TYPES.get(thing['type'])
     if lookup_type is not None:
         return f"{lookup_type}{thing['id']}"
+
+def get_or_none(tags: dict, *keys: str) -> Optional[str]:
+    """
+    Try to extract a value from a dict by trying keys in order, or
+    return None if none of the keys were found.
+    """
+    for key in keys:
+        if key in tags:
+            return tags[key]
+
+    return None
+
+def all_are_none(*args) -> bool:
+    for arg in args:
+        if arg is not None:
+            return False
+
+    return True
+
+#####################################################
+# Instruction Generation
+#####################################################
 
 def specific_place_instructions() -> str:
     return (
@@ -270,379 +686,541 @@ def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
         f"{rel_inst}"
     )
 
-def merge_from_nominatim(thing, nominatim_result) -> Optional[dict]:
-    """Merge information into object missing all or some of it."""
-    if thing is None:
-        return None
 
-    if 'address' not in nominatim_result:
-        return None
+#####################################################
+# Event Emission
+#####################################################
 
-    nominatim_address = nominatim_result['address']
+class OsmEventEmitter:
+    def __init__(self, event_emitter, status_indicators=True):
+        self.event_emitter = event_emitter
+        self.status_indicators = status_indicators
 
-    # prioritize actual name, road name, then display name. display
-    # name is often the full address, which is a bit much.
-    nominatim_name = nominatim_result.get('name')
-    nominatim_road = nominatim_address.get('road')
-    nominatim_display_name = nominatim_result.get('display_name')
-    thing_name = thing.get('name')
+    async def navigating(self, done: bool):
+        if not self.status_indicators:
+            return
 
-    if nominatim_name and not thing_name:
-        thing['name'] = nominatim_name.strip()
-    elif nominatim_road and not thing_name:
-        thing['name'] = nominatim_road.strip()
-    elif nominatim_display_name and not thing_name:
-        thing['name'] = nominatim_display_name.strip()
+        if done:
+            message = "Navigation complete"
+        else:
+            message = "Navigating..."
 
-    tags = thing.get('tags', {})
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "in_progress",
+                "description": message,
+                "done": done,
+            },
+        })
 
-    for key in nominatim_address:
-        obj_key = f"addr:{key}"
-        if obj_key not in tags:
-            tags[obj_key] = nominatim_address[key]
+    async def navigation_error(self, exception: Exception):
+        if not self.status_indicators:
+            return
 
-    thing['tags'] = tags
-    return thing
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "error",
+                "description": f"Error navigating: {str(exception)}",
+                "done": True,
+            },
+        })
 
-def pretty_print_thing_json(thing):
-    """Converts an OSM thing to nice JSON HTML."""
-    formatted_json_str = json.dumps(thing, indent=2)
-    lexer = JsonLexer()
-    formatter = HtmlFormatter(style='colorful')
-    return highlight(formatted_json_str, lexer, formatter)
+    async def resolving(self, done: bool=False, message: Optional[str]=None, items=[]):
+        if not self.status_indicators:
+            return
+
+        items = [
+            {
+                "title": get_or_none(item, "display_name"),
+                "link": OsmUtils.create_osm_link(item.get('lat', -1), item.get('lon', -1))
+            }
+            for item in items
+        ]
+
+        if done:
+            message = "Resolution complete"
+        else:
+            message = f" location: {message}" if message is not None else "..."
+            message = f"Resolving{message}"
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "action": "web_search",
+                "status": "in_progress",
+                "items": items if items else None,
+                "description": message,
+                "done": done,
+            },
+        })
+
+    async def searching(
+        self, category: str, place: str,
+        status: str="in_progress", done: bool=False,
+        tags=[]
+    ):
+        if not self.status_indicators:
+            return
+
+        query = f"{category.capitalize()} POIs near {place}"
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": status,
+                "action": "web_search_queries_generated",
+                "queries": [query],
+                "description": f"Searching for {category} near {place}",
+                "done": done,
+            },
+        })
+
+    async def search_complete(self, category: str, place: str, items=[]):
+        if not self.status_indicators:
+            return
+
+        num_results = len(items)
+        citation_items = []
+
+        for item in items:
+            name = get_or_none(item.get('tags', {}), "name", "brand")
+            addr = get_or_none(item.get('tags', {}), "addr:street", "addr:city")
+            addr = f"({addr})" if addr else ""
+            title = f"{name} {addr}".strip()
+            osm_link = OsmUtils.create_osm_link(item.get('lat', -1), item.get('lon', -1))
+
+            citation_items.append({
+                "title": title,
+                "link": osm_link
+            })
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "action": "web_search",
+                "status": "in_progress",
+                "items": citation_items if citation_items else None,
+                "description": f"Found {num_results} results for {category}",
+                "done": True,
+            },
+        })
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "action": "sources_retrieved",
+                "status": "in_progress",
+                "count": num_results,
+                "description": f"Found {num_results} results for {category}",
+                "done": True,
+            },
+        })
+
+    async def emit_result_citation(self, thing):
+        if not self.status_indicators:
+            return
+
+        converted = OsmUtils.create_citation_document(thing)
+        if not converted:
+            return
+
+        source_name = converted["source_name"]
+        document = converted["document"]
+        osm_link = converted["osm_link"]
+        website = converted["website"]
+
+        await self.event_emitter({
+            "type": "source",
+            "data": {
+                "document": [document],
+                "metadata": [{"source": source_name, "html": True }],
+                "source": {"name": website, "url": website},
+            }
+        })
+
+    async def error(self, exception: Exception):
+        if not self.status_indicators:
+            return
+
+        await self.event_emitter({
+            "type": "status",
+            "data": {
+                "status": "error",
+                "description": f"Error searching OpenStreetMap: {str(exception)}",
+                "done": True,
+            },
+        })
 
 
-def thing_is_useful(thing):
+#####################################################
+# OSM-Related Utility Functions (AKA spaghetti land)
+#####################################################
+
+class OsmUtils:
     """
-    Determine if an OSM way entry is useful to us. This means it
-    has something more than just its main classification tag, and
-    (usually) has at least a name. Some exceptions are made for ways
-    that do not have names.
+    Utility functions that are organized as static methods. AKA
+    dumping ground for spaghetti code.
     """
-    tags = thing.get('tags', {})
-    has_tags = len(tags) > 1
-    has_useful_tags = (
-        'leisure' in tags or
-        'shop' in tags or
-        'amenity' in tags or
-        'car:rental' in tags or
-        'rental' in tags or
-        'car_rental' in tags or
-        'service:bicycle:rental' in tags or
-        'tourism' in tags
-    )
 
-    # there can be a lot of artwork in city centers. drop ones that
-    # aren't as notable. we define notable by the thing having wiki
-    # entries, or by being tagged as historical.
-    if tags.get('tourism', '') == 'artwork':
-        notable = (
-            'wikipedia' in tags or
-            'wikimedia_commons' in tags
-        )
-    else:
-        notable = True
+    @staticmethod
+    def create_citation_document(thing) -> Optional[dict]:
+        if not thing:
+            return None
 
-    return has_tags and has_useful_tags and notable
+        if 'address' in thing:
+            street = get_or_none(thing['address'], "road")
+        else:
+            street = get_or_none(thing['tags'], "addr:street")
 
-def thing_has_info(thing):
-    has_name = any('name' in tag for tag in thing['tags'])
-    return thing_is_useful(thing) and has_name
-    # is_exception = way['tags'].get('leisure', None) is not None
-    # return has_tags and (has_name or is_exception)
+        id = thing.get('id', None)
+        street_name = street if street is not None else ""
+        source_name = f"{thing['name']} {street_name}"
+        lat, lon = thing['lat'], thing['lon']
+        addr = f"at {thing['address']}" if thing['address'] != 'unknown' else 'nearby'
 
-def process_way_result(way) -> Optional[dict]:
-    """
-    Post-process an OSM Way dict to remove the geometry and node
-    info, and calculate a single GPS coordinate from its bounding
-    box.
-    """
-    if 'nodes' in way:
-        del way['nodes']
+        osm_link = OsmUtils.create_osm_link(lat, lon)
+        json_data = OsmUtils.pretty_print_thing_json(thing)
+        website = thing.get('website', osm_link)
 
-    if 'geometry' in way:
-        del way['geometry']
+        document = (f"<style>{HIGHLIGHT_CSS}</style>"
+                    f"<style>{FONT_CSS}</style>"
+                    f"<div>"
+                    f"<p>{thing['name']} is located {addr}.</p>"
+                    f"<ul>"
+                    f"<li>"
+                    f"  <strong>Opening Hours:</strong> {thing['opening_hours']}"
+                    f"</li>"
+                    f"</ul>"
+                    f"<p>Raw JSON data:</p>"
+                    f"{json_data}"
+                    f"</div>")
 
-    if 'bounds' in way:
-        way_center = get_bounding_box_center(way['bounds'])
-        way['lat'] = way_center['lat']
-        way['lon'] = way_center['lon']
-        del way['bounds']
-        return way
-
-    return None
-
-def get_bounding_box_center(bbox):
-    def convert(bbox, key):
-        return bbox[key] if isinstance(bbox[key], float) else float(bbox[key])
-
-    min_lat = convert(bbox, 'minlat')
-    min_lon = convert(bbox, 'minlon')
-    max_lat = convert(bbox, 'maxlat')
-    max_lon = convert(bbox, 'maxlon')
-
-    return {
-        'lon': (min_lon + max_lon) / 2,
-        'lat': (min_lat + max_lat) / 2
-    }
-
-def haversine_distance(point1, point2):
-    R = 6371  # Earth radius in kilometers
-
-    lat1, lon1 = point1['lat'], point1['lon']
-    lat2, lon2 = point2['lat'], point2['lon']
-
-    d_lat = math.radians(lat2 - lat1)
-    d_lon = math.radians(lon2 - lon1)
-    a = (math.sin(d_lat / 2) * math.sin(d_lat / 2) +
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
-         math.sin(d_lon / 2) * math.sin(d_lon / 2))
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    return R * c
-
-def sort_by_closeness(origin, points, *keys: str):
-    """
-    Sorts a list of { lat, lon }-like dicts by closeness to an origin point.
-    The origin is a dict with keys of { lat, lon }.
-    """
-    return sorted(points, key=itemgetter(*keys))
-
-def sort_by_rank(things):
-    """
-    Calculate a rank for a list of things. More important ones are
-    pushed towards the top. Currently only for tourism tags.
-    """
-    def rank_thing(thing: dict) -> int:
-        tags = thing.get('tags', {})
-        if not 'tourism' in tags:
-            return 0
-
-        rank = len([name for name in tags.keys()
-                         if name.startswith("name")])
-        rank += 5 if 'historic' in tags else 0
-        rank += 5 if 'wikipedia' in tags else 0
-        rank += 1 if 'wikimedia_commons' in tags else 0
-        rank += 5 if tags.get('tourism', '') == 'museum' else 0
-        rank += 5 if tags.get('tourism', '') == 'aquarium' else 0
-        rank += 5 if tags.get('tourism', '') == 'zoo' else 0
-        return rank
-
-    return sorted(things, reverse=True, key=lambda t: (rank_thing(t), -t['distance']))
-
-def get_or_none(tags: dict, *keys: str) -> Optional[str]:
-    """
-    Try to extract a value from a dict by trying keys in order, or
-    return None if none of the keys were found.
-    """
-    for key in keys:
-        if key in tags:
-            return tags[key]
-
-    return None
-
-def all_are_none(*args) -> bool:
-    for arg in args:
-        if arg is not None:
-            return False
-
-    return True
-
-def friendly_shop_name(shop_type: str) -> str:
-    """
-    Make certain shop types more friendly for LLM interpretation.
-    """
-    if shop_type == "doityourself":
-        return "hardware"
-    else:
-        return shop_type
-
-def parse_thing_address(thing: dict) -> Optional[str]:
-    """
-    Parse address from either an Overpass result or Nominatim
-    result.
-    """
-    if 'address' in thing:
-        # nominatim result
-        return parse_address_from_address_obj(thing['address'])
-    else:
-        return parse_address_from_tags(thing['tags'])
-
-def parse_address_from_address_obj(address) -> Optional[str]:
-    """Parse address from Nominatim address object."""
-    house_number = get_or_none(address, "house_number")
-    street = get_or_none(address, "road")
-    city = get_or_none(address, "city")
-    state = get_or_none(address, "state")
-    postal_code = get_or_none(address, "postcode")
-
-    # if all are none, that means we don't know the address at all.
-    if all_are_none(house_number, street, city, state, postal_code):
-        return None
-
-    # Handle missing values to create complete-ish addresses, even if
-    # we have missing data. We will get either a partly complete
-    # address, or None if all the values are missing.
-    line1 = filter(None, [street, house_number])
-    line2 = filter(None, [city, state, postal_code])
-    line1 = " ".join(line1).strip()
-    line2 = " ".join(line2).strip()
-    full_address = filter(None, [line1, line2])
-    full_address = ", ".join(full_address).strip()
-    return full_address if len(full_address) > 0 else None
-
-def parse_address_from_tags(tags: dict) -> Optional[str]:
-    """Parse address from Overpass tags object."""
-    house_number = get_or_none(tags, "addr:housenumber", "addr:house_number")
-    street = get_or_none(tags, "addr:street")
-    city = get_or_none(tags, "addr:city")
-    state = get_or_none(tags, "addr:state", "addr:province")
-    postal_code = get_or_none(
-        tags,
-        "addr:postcode", "addr:post_code", "addr:postal_code",
-        "addr:zipcode", "addr:zip_code"
-    )
-
-    # if all are none, that means we don't know the address at all.
-    if all_are_none(house_number, street, city, state, postal_code):
-        return None
-
-    # Handle missing values to create complete-ish addresses, even if
-    # we have missing data. We will get either a partly complete
-    # address, or None if all the values are missing.
-    line1 = filter(None, [street, house_number])
-    line2 = filter(None, [city, state, postal_code])
-    line1 = " ".join(line1).strip()
-    line2 = " ".join(line2).strip()
-    full_address = filter(None, [line1, line2])
-    full_address = ", ".join(full_address).strip()
-    return full_address if len(full_address) > 0 else None
-
-def parse_thing_amenity_type(thing: dict, tags: dict) -> Optional[dict]:
-    """
-    Extract amenity type or other identifying category from
-    Nominatim or Overpass result object.
-    """
-    if 'amenity' in tags:
-        return tags['amenity']
-
-    if thing.get('class') == 'amenity' or thing.get('class') == 'shop':
-        return thing.get('type')
-
-    # fall back to tag categories, like shop=*
-    if 'shop' in tags:
-        return friendly_shop_name(tags['shop'])
-    if 'leisure' in tags:
-        return friendly_shop_name(tags['leisure'])
-
-    return None
-
-def parse_and_validate_thing(thing: dict) -> Optional[dict]:
-    """
-    Parse an OSM result (node or post-processed way) and make it
-    more friendly to work with. Helps remove ambiguity of the LLM
-    interpreting the raw JSON data. If there is not enough data,
-    discard the result.
-    """
-    tags: dict = thing['tags'] if 'tags' in thing else {}
-
-    # Currently we define "enough data" as at least having lat, lon,
-    # and a name. nameless things are allowed if they are in a certain
-    # class of POIs (leisure).
-    has_name = 'name' in tags or 'name' in thing
-    is_leisure = 'leisure' in tags or 'leisure' in thing
-    if 'lat' not in thing or 'lon' not in thing:
-        return None
-
-    if not has_name and not is_leisure:
-        return None
-
-    friendly_thing = {}
-    name: str = (tags['name'] if 'name' in tags
-                 else thing['name'] if 'name' in thing
-                 else str(thing['id']) if 'id' in thing
-                 else str(thing['osm_id']) if 'osm_id' in thing
-                 else "unknown")
-
-    address: str = parse_thing_address(thing)
-    distance: Optional[float] = thing.get('distance', None)
-    nav_distance: Optional[float] = thing.get('nav_distance', None)
-    opening_hours: Optional[str] = tags.get('opening_hours', None)
-
-    lat: Optional[float] = thing.get('lat', None)
-    lon: Optional[float] = thing.get('lon', None)
-    amenity_type: Optional[str] = parse_thing_amenity_type(thing, tags)
-
-    # use the navigation distance if it's present. but if not, set to
-    # the haversine distance so that we at least get coherent results
-    # for LLM.
-    friendly_thing['distance'] = "{:.3f}".format(distance) if distance else "unknown"
-    if nav_distance:
-        friendly_thing['nav_distance'] = "{:.3f}".format(nav_distance) + " km"
-    else:
-        friendly_thing['nav_distance'] = f"a bit more than {friendly_thing['distance']}km"
-
-    friendly_thing['name'] = name if name else "unknown"
-    friendly_thing['address'] = address if address else "unknown"
-    friendly_thing['lat'] = lat if lat else "unknown"
-    friendly_thing['lon'] = lon if lon else "unknown"
-    friendly_thing['amenity_type'] = amenity_type if amenity_type else "unknown"
-    friendly_thing['opening_hours'] = opening_hours if opening_hours else "not recorded"
-    return friendly_thing
-
-def create_osm_link(lat, lon):
-    return EXAMPLE_OSM_LINK.replace("<lat>", str(lat)).replace("<lon>", str(lon))
-
-def convert_and_validate_results(
-    original_location: str,
-    things_nearby: List[dict],
-    sort_message: str="closeness",
-    use_distance: bool=True
-) -> Optional[str]:
-    """
-    Converts the things_nearby JSON into Markdown-ish results to
-    (hopefully) improve model understanding of the results. Intended
-    to stop misinterpretation of GPS coordinates when creating map
-    links. Also drops incomplete results. Supports Overpass and
-    Nominatim results.
-    """
-    entries = []
-    for thing in things_nearby:
-        # Convert to friendlier data, drop results without names etc.
-        # No need to instruct LLM to generate map links if we do it
-        # instead.
-        friendly_thing = parse_and_validate_thing(thing)
-        if not friendly_thing:
-            continue
-
-        map_link = create_osm_link(friendly_thing['lat'], friendly_thing['lon'])
-        hv_distance_json = (f"{friendly_thing['distance']} km" if use_distance
-                            else "unavailable")
-        trv_distance_json = (f"{friendly_thing['nav_distance']}"
-                             if use_distance and 'nav_distance' in friendly_thing
-                             else "unavailable")
-
-        # remove distances from the raw OSM json.
-        friendly_thing.pop('nav_distance', None)
-        friendly_thing.pop('distance', None)
-
-        entry_json = {
-            "latitude": friendly_thing['lat'],
-            "longitude": friendly_thing['lon'],
-            "address": friendly_thing['address'],
-            "amenity_type": friendly_thing['amenity_type'],
-            "geographical_distance": hv_distance_json,
-            "travel_distance": trv_distance_json,
-            "openstreetmap_link": map_link,
-            "raw_osm_json": thing
+        return {
+            "id": id,
+            "source_name": source_name,
+            "document": document,
+            "osm_link": osm_link,
+            "website": website
         }
 
-        entries.append(entry_json)
+    @staticmethod
+    def create_osm_link(lat, lon):
+        return EXAMPLE_OSM_LINK.replace("<lat>", str(lat)).replace("<lon>", str(lon))
 
-    if len(entries) == 0:
+    @staticmethod
+    def pretty_print_thing_json(thing):
+        """Converts an OSM thing to nice JSON HTML."""
+        formatted_json_str = json.dumps(thing, indent=2)
+        lexer = JsonLexer()
+        formatter = HtmlFormatter(style='colorful')
+        return highlight(formatted_json_str, lexer, formatter)
+
+    @staticmethod
+    def thing_is_useful(thing):
+        """
+        Determine if an OSM way entry is useful to us. This means it
+        has something more than just its main classification tag, and
+        (usually) has at least a name. Some exceptions are made for ways
+        that do not have names.
+        """
+        tags = thing.get('tags', {})
+        has_tags = len(tags) > 1
+        has_useful_tags = (
+            'leisure' in tags or
+            'shop' in tags or
+            'amenity' in tags or
+            'car:rental' in tags or
+            'rental' in tags or
+            'car_rental' in tags or
+            'service:bicycle:rental' in tags or
+            'tourism' in tags
+        )
+
+        # there can be a lot of artwork in city centers. drop ones that
+        # aren't as notable. we define notable by the thing having wiki
+        # entries, or by being tagged as historical.
+        if tags.get('tourism', '') == 'artwork':
+            notable = (
+                'wikipedia' in tags or
+                'wikimedia_commons' in tags
+            )
+        else:
+            notable = True
+
+        return has_tags and has_useful_tags and notable
+
+    @staticmethod
+    def thing_has_info(thing):
+        has_name = any('name' in tag for tag in thing['tags'])
+        return OsmUtils.thing_is_useful(thing) and has_name
+
+    @staticmethod
+    def get_bounding_box_center(bbox):
+        def convert(bbox, key):
+            return bbox[key] if isinstance(bbox[key], float) else float(bbox[key])
+
+        min_lat = convert(bbox, 'minlat')
+        min_lon = convert(bbox, 'minlon')
+        max_lat = convert(bbox, 'maxlat')
+        max_lon = convert(bbox, 'maxlon')
+
+        return {
+            'lon': (min_lon + max_lon) / 2,
+            'lat': (min_lat + max_lat) / 2
+        }
+
+    @staticmethod
+    def haversine_distance(point1, point2):
+        R = 6371  # Earth radius in kilometers
+
+        lat1, lon1 = point1['lat'], point1['lon']
+        lat2, lon2 = point2['lat'], point2['lon']
+
+        d_lat = math.radians(lat2 - lat1)
+        d_lon = math.radians(lon2 - lon1)
+        a = (math.sin(d_lat / 2) * math.sin(d_lat / 2) +
+             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+             math.sin(d_lon / 2) * math.sin(d_lon / 2))
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        return R * c
+
+    @staticmethod
+    def add_haversine_distance_to_things(origin, things_nearby):
+        for thing in things_nearby:
+            if 'distance' not in thing:
+                thing['distance'] = round(OsmUtils.haversine_distance(origin, thing), 3)
+
+
+#####################################################
+# OSM Result Parsing
+#####################################################
+
+class OsmParser:
+    """All result parsing-related functionality in one place."""
+
+    def __init__(self, original_location: str, things_nearby: List[dict], include_raw_data=True):
+        self.original_location = original_location
+        self.things_nearby = things_nearby
+        self.include_raw_data = include_raw_data
+
+    @staticmethod
+    def parse_address_from_address_obj(address) -> Optional[str]:
+        """Parse address from Nominatim address object."""
+        house_number = get_or_none(address, "house_number")
+        street = get_or_none(address, "road")
+        city = get_or_none(address, "city")
+        state = get_or_none(address, "state")
+        postal_code = get_or_none(address, "postcode")
+
+        # if all are none, that means we don't know the address at all.
+        if all_are_none(house_number, street, city, state, postal_code):
+            return None
+
+        # Handle missing values to create complete-ish addresses, even if
+        # we have missing data. We will get either a partly complete
+        # address, or None if all the values are missing.
+        line1 = filter(None, [street, house_number])
+        line2 = filter(None, [city, state, postal_code])
+        line1 = " ".join(line1).strip()
+        line2 = " ".join(line2).strip()
+        full_address = filter(None, [line1, line2])
+        full_address = ", ".join(full_address).strip()
+        return full_address if len(full_address) > 0 else None
+
+    @staticmethod
+    def parse_address_from_tags(tags: dict) -> Optional[str]:
+        """Parse address from Overpass tags object."""
+        house_number = get_or_none(tags, "addr:housenumber", "addr:house_number")
+        street = get_or_none(tags, "addr:street")
+        city = get_or_none(tags, "addr:city")
+        state = get_or_none(tags, "addr:state", "addr:province")
+        postal_code = get_or_none(
+            tags,
+            "addr:postcode", "addr:post_code", "addr:postal_code",
+            "addr:zipcode", "addr:zip_code"
+        )
+
+        # if all are none, that means we don't know the address at all.
+        if all_are_none(house_number, street, city, state, postal_code):
+            return None
+
+        # Handle missing values to create complete-ish addresses, even if
+        # we have missing data. We will get either a partly complete
+        # address, or None if all the values are missing.
+        line1 = filter(None, [street, house_number])
+        line2 = filter(None, [city, state, postal_code])
+        line1 = " ".join(line1).strip()
+        line2 = " ".join(line2).strip()
+        full_address = filter(None, [line1, line2])
+        full_address = ", ".join(full_address).strip()
+        return full_address if len(full_address) > 0 else None
+
+    @staticmethod
+    def parse_thing_address(thing: dict) -> Optional[str]:
+        """
+        Parse address from either an Overpass result or Nominatim
+        result.
+        """
+        if 'address' in thing:
+            # nominatim result
+            return OsmParser.parse_address_from_address_obj(thing['address'])
+        else:
+            return OsmParser.parse_address_from_tags(thing['tags'])
+
+    @staticmethod
+    def friendly_shop_name(shop_type: str) -> str:
+        """
+        Make certain shop types more friendly for LLM interpretation.
+        """
+        if shop_type == "doityourself":
+            return "hardware"
+        else:
+            return shop_type
+
+    @staticmethod
+    def parse_thing_amenity_type(thing: dict, tags: dict) -> Optional[dict]:
+        """
+        Extract amenity type or other identifying category from
+        Nominatim or Overpass result object.
+        """
+        if 'amenity' in tags:
+            return tags['amenity']
+
+        if thing.get('class') == 'amenity' or thing.get('class') == 'shop':
+            return thing.get('type')
+
+        # fall back to tag categories, like shop=*
+        if 'shop' in tags:
+            return OsmParser.friendly_shop_name(tags['shop'])
+        if 'leisure' in tags:
+            return OsmParser.friendly_shop_name(tags['leisure'])
+
         return None
 
-    return entries
+    @staticmethod
+    def parse_and_validate_thing(thing: dict) -> Optional[dict]:
+        """
+        Parse an OSM result (node or post-processed way) and make it
+        more friendly to work with. Helps remove ambiguity of the LLM
+        interpreting the raw JSON data. If there is not enough data,
+        discard the result.
+        """
+        tags: dict = thing.get('tags', {})
+
+        # Currently we define "enough data" as at least having lat, lon,
+        # and a name. nameless things are allowed if they are in a certain
+        # class of POIs (leisure).
+        has_name = 'name' in tags or 'name' in thing
+        is_leisure = 'leisure' in tags or 'leisure' in thing
+        if 'lat' not in thing or 'lon' not in thing:
+            return None
+
+        if not has_name and not is_leisure:
+            return None
+
+        lat: float = thing['lat']
+        lon: float = thing['lon']
+
+        friendly_thing = {}
+        name: str = (tags['name'] if 'name' in tags
+                     else thing['name'] if 'name' in thing
+                     else str(thing['id']) if 'id' in thing
+                     else str(thing['osm_id']) if 'osm_id' in thing
+                     else "unknown")
+
+        osm_link = OsmUtils.create_osm_link(lat, lon)
+        amenity_type: Optional[str] = OsmParser.parse_thing_amenity_type(thing, tags)
+        address: str = OsmParser.parse_thing_address(thing)
+        distance: Optional[float] = thing.get('distance', None)
+        nav_distance: Optional[float] = thing.get('nav_distance', None)
+        opening_hours: Optional[str] = tags.get('opening_hours', None)
+        website: Optional[str] = get_or_none(
+            tags, "operator:website", "website", "brand:website"
+        )
+
+        # use the navigation distance if it's present. but if not, set to
+        # the haversine distance so that we at least get coherent results
+        # for LLM.
+        friendly_thing['distance'] = "{:.3f}".format(distance) if distance else "unknown"
+        if nav_distance:
+            friendly_thing['nav_distance'] = "{:.3f}".format(nav_distance) + " km"
+        else:
+            friendly_thing['nav_distance'] = f"a bit more than {friendly_thing['distance']}km"
+
+        friendly_thing['osm_id'] = thing.get('id', 'unknown')
+        friendly_thing['osm_type'] = thing.get('type', None)
+        friendly_thing['name'] = name if name else "unknown"
+        friendly_thing['address'] = address if address else "unknown"
+        friendly_thing['lat'] = lat if lat else "unknown"
+        friendly_thing['lon'] = lon if lon else "unknown"
+        friendly_thing['amenity_type'] = amenity_type if amenity_type else "unknown"
+        friendly_thing['opening_hours'] = opening_hours if opening_hours else "not recorded"
+        friendly_thing['website'] = website if website else osm_link
+        return friendly_thing
+
+    def convert_and_validate_results(
+        self,
+        sort_message: str="closeness",
+        use_distance: bool=True
+    ) -> Optional[str]:
+        """
+        Converts search results into something friendlier for LLM
+        understanding. Also drops incomplete results. Supports
+        Overpass and Nominatim results.
+        """
+        original_location = self.original_location
+        things_nearby = self.things_nearby
+
+        entries = []
+        for thing in things_nearby:
+            # Convert to friendlier data, drop results without names etc.
+            # No need to instruct LLM to generate map links if we do it
+            # instead.
+            friendly_thing = OsmParser.parse_and_validate_thing(thing)
+            if not friendly_thing:
+                continue
+
+            map_link = OsmUtils.create_osm_link(friendly_thing['lat'], friendly_thing['lon'])
+
+            hv_distance_json = (f"{friendly_thing['distance']} km"
+                                if use_distance
+                                else "unavailable")
+
+            trv_distance_json = (f"{friendly_thing['nav_distance']}"
+                                 if use_distance and 'nav_distance' in friendly_thing
+                                 else "unavailable")
+
+            # prepare friendly thing for final result entry. some
+            # values are on the "raw" JSON from earlier in the search
+            # process.
+            thing.pop('nav_distance', None)
+            thing.pop('distance', None)
+            citation_id = thing.pop('citation_id', None)
+
+            friendly_thing.update({
+                "geographical_distance": hv_distance_json,
+                "travel_distance": trv_distance_json,
+                "openstreetmap_link": map_link,
+                "citation_id": citation_id,
+            })
+
+            if self.include_raw_data:
+                friendly_thing["raw_osm_json"] = thing
+
+            entries.append(friendly_thing)
+
+        if len(entries) == 0:
+            return None
+
+        return entries
+
+
+#####################################################
+# Caching of OSM Data
+#####################################################
 
 class OsmCache:
     def __init__(self, filename="/tmp/osm.json"):
@@ -690,29 +1268,32 @@ class OsmCache:
         except FileNotFoundError:
             pass
 
+
+#####################################################
+# Navigation Routing
+#####################################################
+
 class OrsRouter:
     def __init__(
-            self, valves, user_valves: Optional[dict], event_emitter=None,
+        self, valves, user_valves, events: OsmEventEmitter
     ):
         self.cache = OsmCache()
-        self.valves = valves
-        self.event_emitter = event_emitter
-        self.user_valves = user_valves
+        self.events = events
 
-        if self.valves.ors_api_key is not None and self.valves.ors_api_key != "":
-            if self.valves.ors_instance is not None:
+        if valves.ors_api_key is not None and valves.ors_api_key != "":
+            if valves.ors_instance is not None:
                 self._client = openrouteservice.Client(
-                    base_url=self.valves.ors_instance,
-                    key=self.valves.ors_api_key
+                    base_url=valves.ors_instance,
+                    key=valves.ors_api_key
                 )
             else:
-                self._client = openrouteservice.Client(key=self.valves.ors_api_key)
+                self._client = openrouteservice.Client(key=valves.ors_api_key)
         else:
             self._client = None
 
 
     def calculate_route(
-            self, from_thing: dict, to_thing: dict
+        self, from_thing: dict, to_thing: dict
     ) -> Optional[dict]:
         """
         Calculate route between A and B. Returns the route,
@@ -752,7 +1333,7 @@ class OrsRouter:
             return None
 
     def calculate_distance(
-            self, from_thing: dict, to_thing: dict
+        self, from_thing: dict, to_thing: dict
     ) -> Optional[float]:
         """
         Calculate navigation distance between A and B. Returns the
@@ -765,198 +1346,180 @@ class OrsRouter:
         route = self.calculate_route(from_thing, to_thing)
         return route.get('summary', {}).get('distance', None) if route else None
 
+
+#####################################################
+# Main Search Logic
+#####################################################
+
 class OsmSearcher:
-    def __init__(self, valves, user_valves: Optional[dict], event_emitter=None):
-        self.valves = valves
-        self.event_emitter = event_emitter
-        self.user_valves = user_valves
+    def __init__(self, valves, user_valves, event_emitter):
+        self.events = event_emitter
+
+        # config settings
+        self.nominatim_url = valves.nominatim_url
+        self.overpass_turbo_url = valves.overpass_turbo_url
+        self.user_agent = valves.user_agent
+        self.from_header = valves.from_header
+        self.include_raw_data = valves.include_raw_osm_data
+        self.detailed_instructions = (user_valves.instruction_oriented_interpretation
+                                      if user_valves else valves.instruction_oriented_interpretation)
+
+        # dependents
         self._ors = OrsRouter(valves, user_valves, event_emitter)
 
+    @staticmethod
+    def sort_by_rank(things):
+        """
+        Calculate a rank for a list of things. More important ones are
+        pushed towards the top. Currently only for tourism tags.
+        """
+        def rank_thing(thing: dict) -> int:
+            tags = thing.get('tags', {})
+            if not 'tourism' in tags:
+                return 0
+
+            rank = len([name for name in tags.keys()
+                             if name.startswith("name")])
+            rank += 5 if 'historic' in tags else 0
+            rank += 5 if 'wikipedia' in tags else 0
+            rank += 1 if 'wikimedia_commons' in tags else 0
+            rank += 5 if tags.get('tourism', '') == 'museum' else 0
+            rank += 5 if tags.get('tourism', '') == 'aquarium' else 0
+            rank += 5 if tags.get('tourism', '') == 'zoo' else 0
+            return rank
+
+        return sorted(things, reverse=True, key=lambda t: (rank_thing(t), -t['distance']))
+
+    @staticmethod
+    def sort_by_closeness(origin, points, *keys: str):
+        """
+        Sorts a list of { lat, lon }-like dicts by closeness to an origin point.
+        The origin is a dict with keys of { lat, lon }.
+        """
+        return sorted(points, key=itemgetter(*keys))
+
+    @staticmethod
+    def process_way_result(way) -> Optional[dict]:
+        """
+        Post-process an OSM Way dict to remove the geometry and node
+        info, and calculate a single GPS coordinate from its bounding
+        box.
+        """
+        if 'nodes' in way:
+            del way['nodes']
+
+        if 'geometry' in way:
+            del way['geometry']
+
+        if 'bounds' in way:
+            way_center = OsmUtils.get_bounding_box_center(way['bounds'])
+            way['lat'] = way_center['lat']
+            way['lon'] = way_center['lon']
+            del way['bounds']
+            return way
+
+        return None
+
+    @staticmethod
+    def flatten_tags(tag_query):
+        """
+        Make sure that the tags queried results in a completely
+        flat list of OSM tags. That is, remove AND groups.
+        """
+        flat_tags = []
+        for str_or_list in tag_query:
+            if isinstance(str_or_list, str):
+                flat_tags.append(str_or_list)
+            else:
+                flat_tags += [tag for tag in str_or_list]
+
+        return flat_tags
+
+    @staticmethod
+    def group_tags(tags):
+        """
+        De-duplicate tags of the same type into a single Overpass
+        Turbo search term. Also pluck out anything that needs to be
+        ANDed together.
+        """
+        result = {}
+        and_queries = []
+        for tag in tags:
+            # skip AND queries because they must be handled
+            # separately.
+            if not isinstance(tag, str):
+                and_queries.append(tag)
+                continue
+
+            key, value = tag.split('=')
+            if key not in result:
+                result[key] = []
+            result[key].append(value)
+
+        return result, and_queries
+
+    @staticmethod
+    def fallback(nominatim_result):
+        """
+        If we do not have Overpass Turbo results, attempt to use the
+        Nominatim result instead.
+        """
+        return ([nominatim_result] if 'type' in nominatim_result
+                and (nominatim_result['type'] == 'amenity'
+                     or nominatim_result['type'] == 'shop'
+                     or nominatim_result['type'] == 'leisure'
+                     or nominatim_result['type'] == 'tourism')
+                else [])
+
+    @staticmethod
+    def merge_from_nominatim(thing, nominatim_result) -> Optional[dict]:
+        """Merge information into object missing all or some of it."""
+        if thing is None:
+            return None
+
+        if 'address' not in nominatim_result:
+            return None
+
+        nominatim_address = nominatim_result['address']
+
+        # prioritize actual name, road name, then display name. display
+        # name is often the full address, which is a bit much.
+        nominatim_name = nominatim_result.get('name')
+        nominatim_road = nominatim_address.get('road')
+        nominatim_display_name = nominatim_result.get('display_name')
+        thing_name = thing.get('name')
+
+        if nominatim_name and not thing_name:
+            thing['name'] = nominatim_name.strip()
+        elif nominatim_road and not thing_name:
+            thing['name'] = nominatim_road.strip()
+        elif nominatim_display_name and not thing_name:
+            thing['name'] = nominatim_display_name.strip()
+
+        tags = thing.get('tags', {})
+
+        for key in nominatim_address:
+            obj_key = f"addr:{key}"
+            if obj_key not in tags:
+                tags[obj_key] = nominatim_address[key]
+
+        thing['tags'] = tags
+        return thing
+
     def create_headers(self) -> Optional[dict]:
-        if len(self.valves.user_agent) == 0 or len(self.valves.from_header) == 0:
+        if len(self.user_agent) == 0 or len(self.from_header) == 0:
             return None
 
         return {
-            'User-Agent': self.valves.user_agent,
-            'From': self.valves.from_header
+            'User-Agent': self.user_agent,
+            'From': self.from_header
         }
-
-    async def event_resolving(self, done: bool=False, message: Optional[str]=None, items=[]):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        items = [
-            {
-                "title": get_or_none(item, "display_name"),
-                "link": create_osm_link(item.get('lat', -1), item.get('lon', -1))
-            }
-            for item in items
-        ]
-
-        if done:
-            message = "Resolution complete"
-        else:
-            message = f" location: {message}" if message is not None else "..."
-            message = f"Resolving{message}"
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "action": "web_search",
-                "status": "in_progress",
-                "items": items if items else None,
-                "description": message,
-                "done": done,
-            },
-        })
-
-    async def event_searching(
-            self, category: str, place: str,
-            status: str="in_progress", done: bool=False,
-            tags=[]
-    ):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        query = f"{category.capitalize()} POIs near {place}"
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "status": status,
-                "action": "web_search_queries_generated",
-                "queries": [query],
-                "description": f"Searching for {category} near {place}",
-                "done": done,
-            },
-        })
-
-    async def event_search_complete(self, category: str, place: str, items=[]):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        num_results = len(items)
-        citation_items = []
-
-        for item in items:
-            name = get_or_none(item.get('tags', {}), "name", "brand")
-            addr = get_or_none(item.get('tags', {}), "addr:street", "addr:city")
-            addr = f"({addr})" if addr else ""
-            title = f"{name} {addr}".strip()
-
-            citation_items.append({
-                "title": title,
-                "link": create_osm_link(item.get('lat', -1), item.get('lon', -1))
-            })
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "action": "web_search",
-                "status": "in_progress",
-                "items": citation_items if citation_items else None,
-                "description": f"Found {num_results} results for {category}",
-                "done": True,
-            },
-        })
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "action": "sources_retrieved",
-                "status": "in_progress",
-                "count": num_results,
-                "description": f"Found {num_results} results for {category}",
-                "done": True,
-            },
-        })
-
-    def create_citation_document(self, thing) -> Optional[dict]:
-        original_thing = thing
-        thing = parse_and_validate_thing(thing)
-
-        if not thing:
-            return None
-
-        if 'address' in original_thing:
-            street = get_or_none(original_thing['address'], "road")
-        else:
-            street = get_or_none(original_thing['tags'], "addr:street")
-
-        id = thing.get('id', None)
-        street_name = street if street is not None else ""
-        source_name = f"{thing['name']} {street_name}"
-        lat, lon = thing['lat'], thing['lon']
-        osm_link = create_osm_link(lat, lon)
-        json_data = pretty_print_thing_json(original_thing)
-        addr = f"at {thing['address']}" if thing['address'] != 'unknown' else 'nearby'
-
-        # Emit citation with a link to the POI's website, if it
-        # exists. Otherwise, fall back to the OSM link.
-        thing_website = get_or_none(original_thing['tags'], "operator:website", "website", "brand:website")
-        website = thing_website if thing_website is not None else osm_link
-
-        document = (f"<style>{HIGHLIGHT_CSS}</style>"
-                    f"<style>{FONT_CSS}</style>"
-                    f"<div>"
-                    f"<p>{thing['name']} is located {addr}.</p>"
-                    f"<ul>"
-                    f"<li>"
-                    f"  <strong>Opening Hours:</strong> {thing['opening_hours']}"
-                    f"</li>"
-                    f"</ul>"
-                    f"<p>Raw JSON data:</p>"
-                    f"{json_data}"
-                    f"</div>")
-
-        return {
-            "id": id,
-            "source_name": source_name,
-            "document": document,
-            "osm_link": osm_link,
-            "website": website
-        }
-
-    async def emit_result_citation(self, thing):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        converted = self.create_citation_document(thing)
-        if not converted:
-            return
-
-        source_name = converted["source_name"]
-        document = converted["document"]
-        osm_link = converted["osm_link"]
-        website = converted["website"]
-
-        await self.event_emitter({
-            "type": "source",
-            "data": {
-                "document": [document],
-                "metadata": [{"source": source_name, "html": True }],
-                "source": {"name": website, "url": website},
-            }
-        })
-
-    async def event_error(self, exception: Exception):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "status": "error",
-                "description": f"Error searching OpenStreetMap: {str(exception)}",
-                "done": True,
-            },
-        })
 
     def calculate_navigation_distance(self, start, destination) -> float:
         """Calculate real distance from A to B, instead of Haversine."""
         return self._ors.calculate_distance(start, destination)
 
-    def attempt_ors(self, origin, things_nearby) -> bool:
+    def add_nav_distance_to_things(self, origin, things_nearby: List[dict]) -> bool:
         """Update distances to use ORS navigable distances, if ORS enabled."""
         used_ors = False
         cache = OsmCache()
@@ -972,7 +1535,7 @@ class OsmSearcher:
                     nav_distance = self.calculate_navigation_distance(origin, thing)
                 except Exception as e:
                     print(f"[OSM] Error querying ORS: {e}")
-                    print(f"[OSM] Falling back to regular distance due to ORS error!")
+                    print("[OSM] Falling back to regular distance due to ORS error!")
                     nav_distance = thing['distance']
 
             if nav_distance:
@@ -982,51 +1545,54 @@ class OsmSearcher:
 
         return used_ors
 
-    def calculate_haversine(self, origin, things_nearby):
-        for thing in things_nearby:
-            if 'distance' not in thing:
-                thing['distance'] = round(haversine_distance(origin, thing), 3)
-
-    def use_detailed_interpretation_mode(self) -> bool:
-        # Let user valve for instruction mode override the global
-        # setting.
-        if self.user_valves:
-            return self.user_valves.instruction_oriented_interpretation
-        else:
-            return self.valves.instruction_oriented_interpretation
-
     def get_result_instructions(self, tag_type_str: str, used_rel: bool) -> str:
-        if self.use_detailed_interpretation_mode():
-            #return detailed_instructions(tag_type_str, used_rel)
+        if self.detailed_instructions:
             return list_instructions(tag_type_str, used_rel)
         else:
             return simple_instructions(tag_type_str, used_rel)
 
-    @staticmethod
-    def group_tags(tags):
-        result = {}
-        for tag in tags:
-            key, value = tag.split('=')
-            if key not in result:
-                result[key] = []
-            result[key].append(value)
-        return result
-
-    @staticmethod
-    def fallback(nominatim_result):
+    def calculate_bounding_box(self, nominatim_result):
         """
-        If we do not have Overpass Turbo results, attempt to use the
-        Nominatim result instead.
+        Determine bounding box and/or point to use for starting
+        search.
         """
-        return ([nominatim_result] if 'type' in nominatim_result
-                and (nominatim_result['type'] == 'amenity'
-                     or nominatim_result['type'] == 'shop'
-                     or nominatim_result['type'] == 'leisure'
-                     or nominatim_result['type'] == 'tourism')
-                else [])
+        rel_types = ["village", "town", "city", "suburb"]
 
+        # relations can have a lat/lon defined on them. useful for or
+        # other settlements. only do this if the nominatim result is a
+        # relation that defines an entire settled area.
+        # see also OSM admin_level
+        rel_osm_type = nominatim_result.get("osm_type", None) == "relation"
+        rel_type = nominatim_result.get("type", None) == "administrative"
+        rel_class = nominatim_result.get("class", None) == "boundary"
+        rel_addr_type = nominatim_result.get("addresstype", None) in rel_types
+        use_rel_bbox = rel_osm_type and rel_type and rel_class and rel_addr_type
 
-    async def nominatim_lookup_by_id(self, things, format="json"):
+        if use_rel_bbox:
+            rel_lat = nominatim_result.get("lat", None)
+            rel_lon = nominatim_result.get("lon", None)
+            if rel_lat and rel_lon:
+                print("[OSM] Requested search area is settled urban zone. Using lat/lon of OSM relation.")
+                return True, {
+                    'minlat': rel_lat,
+                    'maxlat': rel_lat,
+                    'minlon': rel_lon,
+                    'maxlon': rel_lon
+                }
+
+        # fall back to nominatim bounding box for everything else.
+        return False, {
+            'minlat': nominatim_result['boundingbox'][0],
+            'maxlat': nominatim_result['boundingbox'][1],
+            'minlon': nominatim_result['boundingbox'][2],
+            'maxlon': nominatim_result['boundingbox'][3]
+        }
+
+    async def enrich_from_nominatim(self, things, format="json"):
+        """
+        Enrich search results missing data with extra info from
+        Nominatim.
+        """
         updated_things = [] # the things with merged info.
 
         # handle last chunk, which can have nones due to the way
@@ -1057,10 +1623,9 @@ class OsmSearcher:
             print("[OSM] Got all Nominatim info from cache!")
             return updated_things
         else:
-            print(f"Looking up {len(lookups)} things from Nominatim")
+            print(f"[OSM] Looking up {len(lookups)} things from Nominatim")
 
-
-        url = urljoin(self.valves.nominatim_url, "lookup")
+        url = urljoin(self.nominatim_url, "lookup")
         params = {
             'osm_ids': ",".join(lookups),
             'format': format
@@ -1083,7 +1648,7 @@ class OsmSearcher:
             for thing in things:
                 nominatim_result = addresses_by_id.get(thing['id'], {})
                 if nominatim_result != {}:
-                    updated = merge_from_nominatim(thing, nominatim_result)
+                    updated = OsmSearcher.merge_from_nominatim(thing, nominatim_result)
                     if updated is not None:
                         lookup = to_lookup(thing)
                         cache.set(lookup, updated)
@@ -1091,25 +1656,25 @@ class OsmSearcher:
 
             return updated_things
         else:
-            await self.event_error(Exception(response.text))
+            await self.events.error(Exception(response.text))
             print(response.text)
             return []
 
 
     async def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
-        await self.event_resolving(done=False, message=query)
+        await self.events.resolving(done=False, message=query)
         cache_key = f"nominatim_search_{query}"
         cache = OsmCache()
         data = cache.get(cache_key)
 
         if data:
             print(f"[OSM] Got nominatim search data for {query} from cache!")
-            await self.event_resolving(done=True, message=query, items=data[:limit])
+            await self.events.resolving(done=True, message=query, items=data[:limit])
             return data[:limit]
 
         print(f"[OSM] Searching Nominatim for: {query}")
 
-        url = urljoin(self.valves.nominatim_url, "search")
+        url = urljoin(self.nominatim_url, "search")
         params = {
             'q': query,
             'format': format,
@@ -1119,7 +1684,7 @@ class OsmSearcher:
 
         headers = self.create_headers()
         if not headers:
-            await self.event_error("Headers not set")
+            await self.events.error("Headers not set")
             raise ValueError("Headers not set")
 
         response = requests.get(url, params=params, headers=headers)
@@ -1129,18 +1694,17 @@ class OsmSearcher:
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
 
-            await self.event_resolving(done=True, message=query, items=data[:limit])
+            await self.events.resolving(done=True, message=query, items=data[:limit])
 
-            print(f"Got result from Nominatim for: {query}")
+            print(f"[OSM] Got result from Nominatim for: {query}")
             cache.set(cache_key, data[:limit])
             return data[:limit]
         else:
-            await self.event_error(Exception(response.text))
+            await self.events.error(Exception(response.text))
             print(response.text)
             return None
 
-
-    async def overpass_search(
+    async def search_osm(
             self, place, tags, bbox, limit=5, radius=4000, not_tag_groups={}
     ) -> (List[dict], List[dict]):
         """
@@ -1148,18 +1712,28 @@ class OsmSearcher:
         post-processing is done on ways in order to add coordinates to
         them. Optionally specify not_tag_groups, which is a dict of
         tag to values, all of which will be excluded from the search.
-
+        Each item in the tag list is treated as an OR query. An entry
+        in the tag list can be a string (basic search for "this tag"),
+        or it can be a list of strings itself, which is treated as an
+        AND query.
         """
-        print(f"Searching Overpass Turbo around origin {place}")
+        print(f"[OSM] Searching Overpass Turbo around origin {place}")
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
 
-        url = self.valves.overpass_turbo_url
-        center = get_bounding_box_center(bbox)
+        center = OsmUtils.get_bounding_box_center(bbox)
         around = f"(around:{radius},{center['lat']},{center['lon']})"
 
-        tag_groups = OsmSearcher.group_tags(tags)
+        tag_groups, and_queries = OsmSearcher.group_tags(tags)
+
+        # tags is e.g. [amenity=restaurant, place=blah, ...].
+        # and_queries is a list of those lists. These tags will be
+        # ANDed in Overpass, i.e. the search must fulfill all
+        # conditions. Normally, we OR instead.
+        and_groups = ["".join(f"[{tag}]" for tag in tags) for tags in and_queries]
+
+
         search_groups = [f'"{tag_type}"~"{"|".join(values)}"'
                          for tag_type, values in tag_groups.items()]
 
@@ -1170,9 +1744,10 @@ class OsmSearcher:
 
         searches = []
         for search_group in search_groups:
-            searches.append(
-                f'nwr[{search_group}]{not_search_query}{around}'
-            )
+            searches.append(f'nwr[{search_group}]{not_search_query}{around}')
+
+        for and_group in and_groups:
+            searches.append(f'nwr{and_group}{not_search_query}{around}')
 
         search = ";\n".join(searches)
         if len(search) > 0:
@@ -1190,7 +1765,7 @@ class OsmSearcher:
 
         print(query)
         data = { "data": query }
-        response = requests.get(url, params=data, headers=headers)
+        response = requests.get(self.overpass_turbo_url, params=data, headers=headers)
         if response.status_code == 200:
             # nodes have have exact GPS coordinates. we also include
             # useful way entries, post-processed to remove extra data
@@ -1204,16 +1779,16 @@ class OsmSearcher:
             things_missing_names = []
 
             for res in results:
-                if 'type' not in res or not thing_is_useful(res):
+                if 'type' not in res or not OsmUtils.thing_is_useful(res):
                     continue
                 if res['type'] == 'node':
-                    if thing_has_info(res):
+                    if OsmUtils.thing_has_info(res):
                         nodes.append(res)
                     else:
                         things_missing_names.append(res)
                 elif res['type'] == 'way':
-                    processed = process_way_result(res)
-                    if processed is not None and thing_has_info(res):
+                    processed = OsmSearcher.process_way_result(res)
+                    if processed is not None and OsmUtils.thing_has_info(res):
                         ways.append(processed)
                     else:
                         if processed is not None:
@@ -1223,7 +1798,7 @@ class OsmSearcher:
             if len(things_missing_names) > 0:
                 print(f"Updating {len(things_missing_names)} things with info")
                 for way_chunk in chunk_list(things_missing_names, 20):
-                    updated = await self.nominatim_lookup_by_id(way_chunk)
+                    updated = await self.enrich_from_nominatim(way_chunk)
                     ways = ways + updated
 
             return nodes, ways
@@ -1231,35 +1806,41 @@ class OsmSearcher:
             print(response.text)
             raise Exception(f"Error calling Overpass API: {response.text}")
 
-    async def get_things_nearby(self, nominatim_result, place, tags,
-                                bbox, limit, radius, not_tag_groups):
-        # initial overpass search
-        nodes, ways = await self.overpass_search(
+
+    async def search_and_rank(
+            self, nominatim_result, place, tags,
+            bbox, limit, radius, not_tag_groups):
+        """
+        Search OpenStreetMap and sort results according to
+        distance and relevance to the query.
+        """
+        # initial OSM search
+        nodes, ways = await self.search_osm(
             place, tags, bbox, limit, radius, not_tag_groups
         )
 
-        # use results from overpass, but if they do not exist,
-        # fall back to the nominatim result. this may or may
+        # use results from the initial search, but if they do not
+        # exist, fall back to the nominatim result. this may or may
         # not be a good idea.
         things_nearby = (nodes + ways
                          if len(nodes) > 0 or len(ways) > 0
                          else OsmSearcher.fallback(nominatim_result))
 
-        # in order to not spam ORS, we first sort by haversine
-        # distance and drop number of results to the limit. then, if
-        # enabled, we calculate ORS distances. then we sort again.
-        origin = get_bounding_box_center(bbox)
-        self.calculate_haversine(origin, things_nearby)
+        # add distance to things and drop number of results to the
+        # limit. then, if enabled, we calculate ORS distances. then we
+        # sort again.
+        origin = OsmUtils.get_bounding_box_center(bbox)
+        OsmUtils.add_haversine_distance_to_things(origin, things_nearby)
 
-        # sort by importance + distance, drop to the limit, then sort
-        # by closeness.
-        things_nearby = sort_by_rank(things_nearby)
+        # sort by importance + distance, drop to the requested limit,
+        # then sort by closeness.
+        things_nearby = OsmSearcher.sort_by_rank(things_nearby)
         things_nearby = things_nearby[:limit] # drop down to requested limit
-        things_nearby = sort_by_closeness(origin, things_nearby, 'distance')
+        things_nearby = OsmSearcher.sort_by_closeness(origin, things_nearby, 'distance')
 
-        if self.attempt_ors(origin, things_nearby):
+        if self.add_nav_distance_to_things(origin, things_nearby):
             sort_method = "travel distance"
-            things_nearby = sort_by_closeness(origin, things_nearby, 'nav_distance', 'distance')
+            things_nearby = OsmSearcher.sort_by_closeness(origin, things_nearby, 'nav_distance', 'distance')
         else:
             sort_method = "haversine distance"
 
@@ -1270,43 +1851,19 @@ class OsmSearcher:
 
         return [things_nearby, sort_method]
 
-    def get_bbox(self, nominatim_result):
-        rel_types = ["village", "town", "city", "suburb"]
-
-        # relations can have a lat/lon defined on them. useful for or
-        # other settlements. only do this if the nominatim result is a
-        # relation that defines an entire settled area.
-        # see also OSM admin_level
-        rel_osm_type = nominatim_result.get("osm_type", "node") == "relation"
-        rel_type = nominatim_result.get("type", "n/a") == "administrative"
-        rel_class = nominatim_result.get("class", None) == "boundary"
-        rel_addr_type = nominatim_result.get("addresstype", None) in rel_types
-        use_rel_bbox = rel_osm_type and rel_type and rel_class and rel_addr_type
-
-        if use_rel_bbox:
-            rel_lat = nominatim_result.get("lat", None)
-            rel_lon = nominatim_result.get("lon", None)
-            if rel_lat and rel_lon:
-                print("[OSM] Requested search area is settled urban zone. Using lat/lon of OSM relation.")
-                return True, {
-                    'minlat': rel_lat,
-                    'maxlat': rel_lat,
-                    'minlon': rel_lon,
-                    'maxlon': rel_lon
-                }
-
-        # fall back to nominatim bounding box for everything else.
-        return False, {
-            'minlat': nominatim_result['boundingbox'][0],
-            'maxlat': nominatim_result['boundingbox'][1],
-            'minlon': nominatim_result['boundingbox'][2],
-            'maxlon': nominatim_result['boundingbox'][3]
-        }
 
     async def search_nearby(
             self, place: str, tags: List[str], limit: int=5, radius: int=4000,
             category: str="POIs", not_tag_groups={}
     ) -> dict:
+        """
+        Main entrypoint into the searching logic. Checks header
+        validity, and then uses Nominatim to figure out WHERE to
+        search. From that spot, search for POIs using Overpass Turbo
+        (with data enrichment from Nominatim if necessary), rank them
+        by distance and relevance, and then final result list plus
+        some metadata.
+        """
         headers = self.create_headers()
         if not headers:
             return { "place_display_name": place, "results": VALVES_NOT_SET }
@@ -1317,19 +1874,17 @@ class OsmSearcher:
             nominatim_result = []
 
         if not nominatim_result or len(nominatim_result) == 0:
-            await self.event_search_complete(category, place, [])
+            await self.events.search_complete(category, place, [])
             return { "place_display_name": place, "results": NO_RESULTS_BAD_ADDRESS }
 
         try:
             nominatim_result = nominatim_result[0]
 
-            print(json.dumps(nominatim_result))
-
             # display friendlier searching message if possible
             if 'display_name' in nominatim_result:
                 place_display_name = ",".join(nominatim_result['display_name'].split(",")[:3])
             elif 'address' in nominatim_result:
-                addr = parse_thing_address(nominatim_result)
+                addr = OsmParser.parse_thing_address(nominatim_result)
                 if addr is not None:
                     place_display_name = ",".join(addr.split(",")[:3])
                 else:
@@ -1338,25 +1893,28 @@ class OsmSearcher:
                 print(f"WARN: Could not find display name for place: {place}")
                 place_display_name = place
 
-            await self.event_searching(category, place_display_name, done=False, tags=tags)
+            await self.events.searching(category, place_display_name, done=False, tags=tags)
 
-            used_rel, bbox = self.get_bbox(nominatim_result)
+            used_rel, bbox = self.calculate_bounding_box(nominatim_result)
 
             print(f"[OSM] Searching for {category} near {place_display_name}")
-            things_nearby, sort_method = await self.get_things_nearby(nominatim_result, place, tags,
-                                                         bbox, limit, radius, not_tag_groups)
+            things_nearby, sort_method = await self.search_and_rank(
+                nominatim_result, place, tags,
+                bbox, limit, radius, not_tag_groups
+            )
 
             if not things_nearby or len(things_nearby) == 0:
-                await self.event_search_complete(category, place_display_name, [])
+                await self.events.search_complete(category, place_display_name, [])
                 return { "place_display_name": place, "results": NO_RESULTS }
 
             print(f"[OSM] Found {len(things_nearby)} {category} results near {place_display_name}")
 
-            tag_type_str = ", ".join(tags)
+            tag_type_str = ", ".join(OsmSearcher.flatten_tags(tags))
 
             # Only print the full result instructions if we
             # actually have something.
-            search_results = convert_and_validate_results(place, things_nearby, sort_message=sort_method)
+            parser = OsmParser(place, things_nearby, include_raw_data=self.include_raw_data)
+            search_results = parser.convert_and_validate_results(sort_message=sort_method)
             if search_results:
                 result_instructions = self.get_result_instructions(tag_type_str, used_rel)
             else:
@@ -1368,17 +1926,17 @@ class OsmSearcher:
             }
 
             # emit citations for the actual results.
-            await self.event_search_complete(category, place_display_name, things_nearby)
-            for thing in things_nearby:
-                await self.emit_result_citation(thing)
+            await self.events.search_complete(category, place_display_name, things_nearby)
+            for thing in search_results:
+                await self.events.emit_result_citation(thing)
 
             return { "place_display_name": place_display_name, "results": resp, "things": things_nearby }
         except ValueError:
-            await self.event_search_complete(category, place_display_name, [])
+            await self.events.search_complete(category, place_display_name, [])
             return { "place_display_name": place_display_name, "results": NO_RESULTS, "things": [] }
         except Exception as e:
             print(e)
-            await self.event_error(e)
+            await self.events.error(e)
             instructions = (f"No results were found, because of an error. "
                             f"Tell the user that there was an error finding results.")
 
@@ -1389,9 +1947,8 @@ class OsmSearcher:
 async def do_osm_search(
         valves, user_valves, place, tags,
         category="POIs", event_emitter=None, limit=5, radius=4000,
-        setting='urban', not_tag_groups={}
+        setting='urban', not_tag_groups={}, radius_multiplier=1
 ):
-    radius = radius * setting_to_multiplier(setting)
     # handle breaking 1.0 change, in case of old Nominatim valve settings.
     if valves.nominatim_url.endswith("/search"):
         message = "Old Nominatim URL setting still in use!"
@@ -1412,73 +1969,48 @@ async def do_osm_search(
         }
 
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place} ({setting} setting)")
-    searcher = OsmSearcher(valves, user_valves, event_emitter)
+    radius = radius * setting_to_multiplier(setting) * radius_multiplier
+    events = OsmEventEmitter(event_emitter)
+    searcher = OsmSearcher(valves, user_valves, events)
     search = await searcher.search_nearby(place, tags, limit=limit, radius=radius,
                                           category=category, not_tag_groups=not_tag_groups)
 
     # move place display name to top level results returned to client.
-    print(json.dumps(search.get("results", {})))
     place_display_name = search.get("place_display_name", None)
     search.get("results", {}).update(resolved_location=place_display_name)
     return search["results"]
 
+
+#####################################################
+# Navigation Logic
+#####################################################
+
 class OsmNavigator:
     def __init__(
-        self, valves, user_valves: Optional[dict], event_emitter=None,
+        self, valves, user_valves: Optional[dict], events: OsmEventEmitter,
     ):
         self.valves = valves
-        self.event_emitter = event_emitter
         self.user_valves = user_valves
-
-    async def event_navigating(self, done: bool):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        if done:
-            message = "Navigation complete"
-        else:
-            message = "Navigating..."
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "status": "in_progress",
-                "description": message,
-                "done": done,
-            },
-        })
-
-    async def event_error(self, exception: Exception):
-        if not self.event_emitter or not self.valves.status_indicators:
-            return
-
-        await self.event_emitter({
-            "type": "status",
-            "data": {
-                "status": "error",
-                "description": f"Error navigating: {str(exception)}",
-                "done": True,
-            },
-        })
+        self.events = events
 
     async def navigate(self, start_place: str, destination_place: str):
-        await self.event_navigating(done=False)
-        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
-        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
+        await self.events.navigating(done=False)
+        searcher = OsmSearcher(self.valves, self.user_valves, self.events)
+        router = OrsRouter(self.valves, self.user_valves, self.events)
 
         try:
             start = await searcher.nominatim_search(start_place, limit=1)
             destination = await searcher.nominatim_search(destination_place, limit=1)
 
             if not start or not destination:
-                await self.event_navigating(done=True)
+                await self.events.navigating(done=True)
                 return NO_RESULTS
 
             start, destination = start[0], destination[0]
             route = router.calculate_route(start, destination)
 
             if not route:
-                await self.event_navigating(done=True)
+                await self.evnts.event_navigating(done=True)
                 return NO_RESULTS
 
             total_distance = round(route.get('summary', {}).get('distance', ''), 2)
@@ -1519,11 +2051,11 @@ class OsmNavigator:
                 "route": nav_instructions
             }
 
-            await self.event_navigating(done=True)
+            await self.events.navigating(done=True)
             return result
         except Exception as e:
             print(e)
-            await self.event_error(e)
+            await self.events.navigation_error(e)
             message = (f"There are no results due to an error. "
                        "Tell the user that there was an error.")
 
@@ -1535,6 +2067,11 @@ class OsmNavigator:
                 "travel_time": None,
                 "route": None
             }
+
+
+#####################################################
+# Normalization & Validation Functions
+#####################################################
 
 def normalize_setting(setting: Optional[str]) -> str:
     if setting:
@@ -1557,12 +2094,14 @@ def setting_to_multiplier(setting: str) -> int:
 
     return 1
 
+# The various *_to_tags functions convert the LLM-requested thing to
+# search for into a set of OSM tags. Most of the time, these are just
+# simple lists of tags, where any OSM entity having at least one tag
+# is returned. But the functions can also return ANDed tags (entities
+# must have ALL specified tags), and tags that are rejected outright
+# (entities must NOT have those tags).
 
 def store_category_to_tags(store_type: str) -> Tuple[List[str], dict]:
-    """
-    Convert the specified type parameter for
-    find_stores_near_place into the correct list of tags.
-    """
     if store_type == "groceries":
         return ["shop=supermarket", "shop=grocery", "shop=greengrocer"], {}
     elif store_type == "convenience":
@@ -1584,10 +2123,6 @@ def store_category_to_tags(store_type: str) -> Tuple[List[str], dict]:
 
 
 def recreation_to_tags(recreation_type: str) -> Tuple[List[str], dict]:
-    """
-    Convert the specified type parameter for
-    find_recreation_near_place into the correct list of tags.
-    """
     if recreation_type == "swimming":
         return ["leisure=swimming_pool", "leisure=swimming_area",
                 "leisure=water_park", "tourism=theme_park"], {}
@@ -1596,22 +2131,20 @@ def recreation_to_tags(recreation_type: str) -> Tuple[List[str], dict]:
     elif recreation_type == "amusement":
         return ["leisure=park", "leisure=amusement_arcade", "tourism=theme_park"], {}
     elif recreation_type == "sports":
-        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course"], {}
+        return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course",
+                "leisure=pitch", "leisure=sports_center"], {}
     else:
         return [], {}
 
 
 def food_category_to_tags(food_type: str) -> Tuple[List[str], dict]:
-    """
-    Convert the specified type parameter for
-    find_food_and_bakeries_near_place into the correct list of tags.
-    """
     if food_type == "sit_down_restaurants":
         return ["amenity=restaurant", "amenity=eatery", "amenity=canteen"], {}
     elif food_type == "fast_food":
         return ["amenity=fast_food"], {}
     elif food_type == "cafe_or_bakery":
-        # cannabis stores are sometimes tagged with amenity=cafe.
+        # cannabis stores are sometimes tagged with amenity=cafe. do
+        # not return them when searching for food to eat.
         return ["shop=bakery", "amenity=cafe"], { "shop": [ "cannabis" ] }
     elif food_type == "bars_and_pubs":
         # the search for amenity=pub can also wind up finding
@@ -1711,18 +2244,14 @@ EV_CHARGER_OSM_SOCKET_TYPES = [
 ]
 
 
-# For certain things, we might need two-step searching: one call to
-# return list of possible tags, and another to return the actual
-# results. This will prevent the model from hallucinating. Maybe also
-# use it to control limits. Urban = higher limits for stuff like
-# restaurants.
+#####################################################
+# Main Tool Entrypoint
+#####################################################
+#
+# This is the part we've all been waiting for...
+#
 
 class Tools:
-    class POI(BaseModel):
-        name: str = Field(description="Name of the point of interest")
-        coords: List[float] = Field("Two-number list, coordinates of the point of interest [lat, lon]")
-        description: str = Field(description="Description of the point of interest")
-
     class Valves(BaseModel):
         user_agent: str = Field(
             default="", description="Unique user agent to identify your OSM API requests."
@@ -1755,6 +2284,10 @@ class Tools:
         status_indicators: bool = Field(
             default=True,
             description=("Emit status update events to the web UI.")
+        )
+        include_raw_osm_data: bool = Field(
+            default=False,
+            description="Include raw OSM data in search results or not."
         )
         pass
 
@@ -1823,15 +2356,16 @@ class Tools:
         :return: Information about the place, if found.
         """
         print(f"[OSM] Searching for info on [{address_or_place}].")
-        searcher = OsmSearcher(self.valves, self.user_valves, __event_emitter__)
+        events = OsmEventEmitter(__event_emitter__)
+        searcher = OsmSearcher(self.valves, self.user_valves, events)
+
         try:
             result = await searcher.nominatim_search(address_or_place, limit=5)
             if result:
-                results = convert_and_validate_results(
-                    address_or_place, result,
+                parser = OsmParser(address_or_place, result)
+                results = parser.convert_and_validate_results(
                     sort_message="importance", use_distance=False
                 )
-
 
                 resp = {
                     "instructions": specific_place_instructions(),
@@ -1862,18 +2396,19 @@ class Tools:
         :return: The navigation route and associated info, if found.
         """
         print(f"[OSM] Navigating from [{start_address_or_place}] to [{destination_address_or_place}].")
-        navigator = OsmNavigator(self.valves, self.user_valves, __event_emitter__)
+        events = OsmEventEmitter(__event_emitter__)
+        navigator = OsmNavigator(self.valves, self.user_valves, events)
         return await navigator.navigate(start_address_or_place, destination_address_or_place)
 
     async def find_stores_by_category_near_place(
-            self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+            self, place: str, category: StoreCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds stores of a specific type on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of store to search for. Must be one of "groceries", "convenience", "alcohol", "drugs", "cannabis", "electronics", "electrical", "hardware", or "diy".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of store to search for.
         """
         allowed_categories = [
             "groceries", "convenience", "alcohol", "drugs",
@@ -1894,15 +2429,15 @@ class Tools:
                                    not_tag_groups=not_tag_groups)
 
     async def find_recreation_by_category_near_place(
-            self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+            self, place: str, category: RecreationCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds recreation facilities of a specific type on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         Note: amusement category can be arcades, theme parks, and similar.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of recreation to search for. Must be one of "swimming", "playgrounds", "amusement", or "sports".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of recreation to search for.
         """
         allowed_categories = ["swimming", "playgrounds", "amusement", "sports"]
         setting = normalize_setting(setting)
@@ -1928,16 +2463,16 @@ class Tools:
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
-    async def find_eateries_by_category_near_place(
-            self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+    async def find_eateries_and_drinking_by_category_near_place(
+            self, place: str, category: EateryCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds places to eat or drink on OpenStreetMap near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of eateries to search for. Must be one of "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of eateries to search for.
         """
         allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
         setting = normalize_setting(setting)
@@ -1953,15 +2488,15 @@ class Tools:
                                    not_tag_groups=not_tag_groups)
 
     async def find_travel_info_by_category_near_place(
-        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+        self, place: str, category: TravelCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Find tourist attractions, accommodation, public transport, bike rentals, or car rentals on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of travel info to search for. Must be one of "tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of travel info to search for.
         """
         allowed_categories = ["tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport"]
         setting = normalize_setting(setting)
@@ -1990,15 +2525,15 @@ class Tools:
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
     async def find_healthcare_by_category_near_place(
-        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+        self, place: str, category: HealthcareCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Find healthcare, doctors, hospitals, and pharmacies on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of healthcare to search for. Must be one of "doctor", "hospital", "pharmacy".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of healthcare to search for.
         """
         allowed_categories = ["doctor", "hospital", "pharmacy"]
         setting = normalize_setting(setting)
@@ -2013,31 +2548,70 @@ class Tools:
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    not_tag_groups=not_tag_groups)
 
-    async def find_place_of_worship_near_place(self, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+    async def find_place_of_worship_near_place(
+            self, __user__: dict, place: str,
+            religion: ReligionCategory,
+            denomination: DenominationCategory,
+            is_common_for_area: bool,
+            setting: UrbanSetting,
+            __event_emitter__
+    ) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
         given place or address. For setting, specify if the place is an urban area,
-        a suburb, or a rural location.
+        a suburb, or a rural location. If searching for a denomination, the denomination must be part of the
+        given religion. If NOT searching for any specific denomination, use the special 'any_denomination'
+        value. If a religion is specified as not common in the requested area, the search radius
+        will be greatly increased. A religion is common in the requested area if it traditionally has
+        a lot of adherents or a visible social presence in the area.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :param religion: Narrow the search to a particular religion. Use "any_religion" to search for all places of worship.
+        :param denomination: Narrow search to denomination of particular religion. Denomination must match religion.
+        :param is_common_for_area: Whether or not the religion or denomination is common in the requested area.
+        :param setting: Urban-ness of the requested location. Controls search radius.
         :return: A list of nearby places of worship, if found.
         """
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
+
+        # by default, look for all places of worship.
         tags = ["amenity=place_of_worship"]
+
+        # searching for a specific religion?
+        if religion != "any_religion" and religion is not None:
+            tags = [["amenity=place_of_worship", f"religion={religion}"]]
+
+
+        # or even a specific religion + denomination?
+        if denomination != 'any_denomination' and denomination is not None:
+            split = denomination.split("|")
+            if len(split) != 2 or '|' not in denomination:
+                raise ValueError("Denomination must be specified as 'religion|denomination'")
+
+            denom_religion = split[0]
+            search_by_denom = split[1]
+
+            if denom_religion != religion:
+                raise ValueError(f'Denomination specified. religion parameter must be: {denom_religion}')
+
+            # now we can actually search by religion + denom
+            tags = [["amenity=place_of_worship", f"religion={religion}", f"denomination={search_by_denom}"]]
+
+        radius_multiplier = 1 if is_common_for_area else 2.5
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__)
+                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
+                                   radius_multiplier=radius_multiplier)
 
     async def find_education_by_category_near_place(
-        self, place: str, category: str, setting: str, __user__: dict, __event_emitter__
+        self, place: str, category: EducationCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
         Find education institutions and resources on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         Note: category "schools" searches only for primary and secondary schools, NOT universities or colleges.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category of education to search for. Must be one of "schools", "universities_and_colleges", "libraries".
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category of education to search for.
         """
         allowed_categories = ["schools", "universities_and_colleges", "libraries"]
         setting = normalize_setting(setting)
@@ -2053,21 +2627,24 @@ class Tools:
                                    not_tag_groups=not_tag_groups)
 
     async def find_fuel_or_charging_by_category_near_place(
-            self, place: str, category: str, fuel_type: str, ev_charger_type: str, setting: str, __user__: dict, __event_emitter__
+            self, place: str, category: FuelCategory, fuel_type: FuelTypeCategory,
+            ev_charger_type: EVChargerCategory, setting: UrbanSetting,
+            __user__: dict, __event_emitter__
     ) -> str:
         """
         Finds gas stations, petrol stations, fuel stations, or EV fast chargers near a given place or address.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
-        Does not find slow (regular) EV chargers.
+        Does not find slow (regular) EV chargers. EV fast charger note: 'chademo3' is not the same as 'chademo'.
+        'chademo3' is also known as 'chaoji'.j
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
-        :param category: Category to search for. Must be one of "gas_or_petrol", "ev_fast_charging".
-        :param fuel_type: Must be one of "petrol", "diesel", or "all" (default). Should be null if searching for EV chargers.
-        :param ev_charger_type: Must be one of "chademo", "chademo3", "chaoji", "ccs2", "ccs1", "gb/t", "nacs", or "all" (default). Should be null if searching for gas.
+        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param category: Category to search for: either fossil fuels or EV fast chargers.
+        :param fuel_type: Type of fossil fuel to search for.
+        :param ev_charger_type: Type of EV charger to search for.
         :return: A list of nearby fueling stations, if found.
         """
         # subfunction to find fuel
-        async def _find_fuel_near_place(valves, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
+        async def _find_fossil_fuel_near_place(valves, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
             setting = normalize_setting(setting)
             user_valves = __user__["valves"] if "valves" in __user__ else None
             tags = ["amenity=fuel"]
@@ -2104,19 +2681,39 @@ class Tools:
 
 
         # Main part of fuel search function
-        allowed_categories = ["gas_or_petrol", "ev_fast_charging"]
+        allowed_categories = ["fossil_fuels", "ev_fast_charging"]
         validation_error = validate_category(category, allowed_categories)
 
         if validation_error:
             return validation_error
 
-        if category == "gas_or_petrol":
+        if category == "fossil_fuels":
             print(f"[OSM] WARN: Currently ignoring fuel type parameter (was '{fuel_type}')")
-            return await _find_fuel_near_place(self.valves, __user__, place, setting, __event_emitter__)
+            return await _find_fossil_fuel_near_place(self.valves, __user__, place, setting, __event_emitter__)
         elif category == "ev_fast_charging":
             return await _find_ev_fast_chargers_near_place_with_type(
                 self.valves, __user__, place, ev_charger_type, setting, __event_emitter__
             )
+
+
+    def show_map(self, category: POICategory, results: List[OsmPOI]) -> HTMLResponse:
+        """
+        Shows a map for search results. Takes a list of Points of Interest that
+        were returned in a previous search function call. You **must** call another
+        function first to get information required for this function!
+        :param category: Results category searched for.
+        :param results: Point of Interest (POI) results from a previous function call.
+        :return: HTML for displaying a search results map.
+        """
+        headers = {"Content-Disposition": "inline"}
+        results_json = json.dumps(results)
+        print(results_json)
+
+        ui_html = (MAP_UI
+                   .replace("{REPLACE_WITH_POI_RESULTS}", results_json)
+                   .replace("{REPLACE_WITH_CATEGORY}", category))
+
+        return HTMLResponse(content=ui_html, headers=headers)
 
 
     # This function exists to help catch situations where the user is
@@ -2128,7 +2725,7 @@ class Tools:
         self,
         __user__: dict,
         place: str,
-        setting: str,
+        setting: UrbanSetting,
         category: str
     ) -> str:
         """
@@ -2139,7 +2736,7 @@ class Tools:
         an urban area, a suburb, or a rural location.
 
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: must be "urban", "suburban", or "rural". Controls search radius.
+        :param setting: Urban-ness of the requested location. Controls search radius.
         :param category: The category of place, shop, etc to look up.
         :return: A list of nearby shops.
         """

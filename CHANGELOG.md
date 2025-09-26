@@ -9,6 +9,24 @@
 
 # OpenStreetMap Tool
 
+**4.0.0:**
+Major Changes:
+ - **UI Integration:** The tool is now able to generate an interactive
+   map with results on it.
+ - **Search Enhancements:** Ability to search for places of worship
+   for specific religions, and denominations of religions.
+ - **Increased Accuracy:** Much more consistent tool calls due to
+   completely accurate JSON schema.
+ - **Refactoring:** First step in internal refactoring to increase
+   code maintainability.
+
+Additional Changes:
+ - No longer return raw OSM data in search results by default to save
+   on token use.
+ - Add website, opening hours to search result citations.
+ - Tool can now find POIs that must fulfill multiple conditions. Used
+   for place of worship search, but has future applications.
+
 **3.2.1:**
  - Report resolved location name in tool results to improve UX when
    the tool is given raw coordinates.
