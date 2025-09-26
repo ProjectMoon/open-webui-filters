@@ -2260,7 +2260,7 @@ class Tools:
             self, __user__: dict, place: str,
             religion: ReligionCategory,
             denomination: DenominationCategory,
-            is_common_for_location: bool,
+            is_common_for_area: bool,
             setting: UrbanSetting,
             __event_emitter__
     ) -> str:
@@ -2269,12 +2269,13 @@ class Tools:
         given place or address. For setting, specify if the place is an urban area,
         a suburb, or a rural location. If searching for a denomination, the denomination must be part of the
         given religion. If NOT searching for any specific denomination, use the special 'any_denomination'
-        value. If a religion is specified as not uncommon in the requested area, the search radius
-        will be greatly increased.
+        value. If a religion is specified as not common in the requested area, the search radius
+        will be greatly increased. A religion is common in the requested area if it traditionally has
+        a lot of adherents or a visible social presence in the area.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param religion: Narrow the search to a particular religion. Use "any_religion" to search for all places of worship.
         :param denomination: Narrow search to denomination of particular religion. Denomination must match religion.
-        :param is_common_for_location: Whether or not the religion or denomination is rare in the requested area.
+        :param is_common_for_area: Whether or not the religion or denomination is common in the requested area.
         :param setting: Urban-ness of the requested location. Controls search radius.
         :return: A list of nearby places of worship, if found.
         """
@@ -2304,7 +2305,7 @@ class Tools:
             # now we can actually search by religion + denom
             tags = [["amenity=place_of_worship", f"religion={religion}", f"denomination={search_by_denom}"]]
 
-        radius_multiplier = 1 if is_common_for_location else 2.5
+        radius_multiplier = 1 if is_common_for_area else 2.5
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    radius_multiplier=radius_multiplier)
