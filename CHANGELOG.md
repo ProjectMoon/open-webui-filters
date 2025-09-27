@@ -9,6 +9,14 @@
 
 # OpenStreetMap Tool
 
+**4.1.0:**
+ - New POI type: gyms.
+ - Add more category-specific information to search results.
+ - Always surface access, brand, and operator tags in search results,
+   if present.
+ - Search for computer stores, radiotechnics, and mobile phone stores
+   when searching for electronics stores.
+
 **4.0.1:**
 Improvements:
  - Limit map POI list height to 400px, with auto-scrolling.

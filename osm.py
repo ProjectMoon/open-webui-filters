@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.0.1
+version: 4.1.0
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -297,7 +297,7 @@ StoreCategory: TypeAlias = Literal[
 ]
 
 RecreationCategory: TypeAlias = Literal[
-    'swimming', 'playgrounds', 'amusement', 'sports'
+    'swimming', 'playgrounds', 'amusement', 'sports', 'gyms'
 ]
 
 EateryCategory: TypeAlias = Literal[
@@ -1025,6 +1025,13 @@ class OsmUtils:
 # For example, "socket:type2:*" would only look for tags that
 # start with the prefix "socket:type2".
 RAW_DATA_BY_CATEGORY = {
+    # stores
+    "groceries": { "organic", "fair_trade", "origin" },
+    "convenience": { "organic", "fair_trade", "origin", "ice_cream" },
+    "cannabis": { "cannabis:*" },
+    "drugs": { "cannabis:*" },
+    "electronics": { "electronics", "repair", "second_hand" },
+
     # food and drink
     "sit_down_restaurants": {"cuisine", "reservation"},
     "fast_food": {"cuisine"},
@@ -1032,7 +1039,11 @@ RAW_DATA_BY_CATEGORY = {
     "bars_and_pubs": {"cocktails", "reservation"},
 
     # recreation
-    "sports": { "sport" },
+    "sports": { "sport", "surface", "lit" },
+    "swimming": { "swimming_lanes", "outdoor", "indoor", "location",
+                 "depth", "heated", "lifeguard", "sport:scuba_diving"},
+    "playgrounds": { "surface", "min_age", "max_age", "fee", "playground=",
+                     "playground:*", "stroller", "fenced"},
 
     # tourism
     "accommodation": { "stars", "internet_access", "rooms", "check_in", "check_out" },
@@ -1043,9 +1054,14 @@ RAW_DATA_BY_CATEGORY = {
     "schools": { "capacity", "grades", "isced:level", "min_age", "max_age", "religion",
                  "pedagogy", "language", "school:language" },
 
+    # healthcare
+    "pharmacies": { "dispensing", "drive_through" },
+
     # fuel etc
-    "ev_fast_charging": {"operator", "fee", "socket:*", "payment:*", "authentication:*",
-                         "motorcar", "truck"},
+    "fossil_fuels": { "self_service", "full_service", "full_service:conditional", "car_wash",
+                      "compressed_air", "toilets", "water_point", "sanitary_dump_station"  },
+    "ev_fast_charging": {"fee", "socket:*", "payment:*", "authentication:*",
+                         "motorcar", "truck", "ref" },
 
 }
 
@@ -1215,9 +1231,12 @@ class OsmParser:
         osm_link = OsmUtils.create_osm_link(lat, lon)
         amenity_type: Optional[str] = OsmParser.parse_thing_amenity_type(thing, tags)
         address: str = OsmParser.parse_thing_address(thing)
-        distance: Optional[float] = thing.get('distance', None)
-        nav_distance: Optional[float] = thing.get('nav_distance', None)
-        opening_hours: Optional[str] = tags.get('opening_hours', None)
+        distance: Optional[float] = thing.get('distance')
+        nav_distance: Optional[float] = thing.get('nav_distance')
+        opening_hours: Optional[str] = tags.get('opening_hours')
+        operator: Optional[str] = tags.get('operator')
+        access: Optional[str] = tags.get('access')
+        brand: Optional[str] = tags.get('brand')
         website: Optional[str] = get_or_none(
             tags, "operator:website", "website", "brand:website"
         )
@@ -1231,6 +1250,15 @@ class OsmParser:
         else:
             friendly_thing['nav_distance'] = f"a bit more than {friendly_thing['distance']}km"
 
+        if brand:
+            friendly_thing['brand'] = brand
+
+        if operator:
+            friendly_thing['operator'] = operator
+
+        if access:
+            friendly_thing['access'] = access
+
         friendly_thing['osm_id'] = thing.get('id', 'unknown')
         friendly_thing['osm_type'] = thing.get('type', None)
         friendly_thing['name'] = name if name else "unknown"
@@ -1241,6 +1269,7 @@ class OsmParser:
         friendly_thing['opening_hours'] = opening_hours if opening_hours else "not recorded"
         friendly_thing['website'] = website if website else osm_link
         friendly_thing['phone_number'] = thing.get('phone', 'unknown')
+
 
         if category:
             friendly_thing['additional_info'] = OsmParser.extract_raw_data(category, thing)
@@ -2200,7 +2229,7 @@ def store_category_to_tags(store_type: str) -> Tuple[List[str], dict]:
     elif store_type == "drugs" or store_type == "cannabis":
         return ["shop=coffeeshop", "shop=cannabis", "shop=headshop", "shop=smartshop"], {}
     elif store_type == "electronics":
-        return ["shop=electronics"], {}
+        return ["shop=electronics", "shop=computer", "shop=hifi", "shop=mobile_phone", "shop=radiotechnics"], {}
     elif store_type == "electrical":
         return ["shop=lighting", "shop=electrical"], {}
     elif store_type == "hardware" or store_type == "diy":
@@ -2219,9 +2248,17 @@ def recreation_to_tags(recreation_type: str) -> Tuple[List[str], dict]:
         return ["leisure=playground"], {}
     elif recreation_type == "amusement":
         return ["leisure=park", "leisure=amusement_arcade", "tourism=theme_park"], {}
+    elif recreation_type == "gyms":
+        # gyms can either show up as leisure=fitness_centre, or a
+        # combo of leisure=sports_centre and sport=fitness.
+        return ["leisure=fitness_centre", "leisure=fitness_center",
+                ["leisure=sports_centre", "sport=fitness" ]], {}
     elif recreation_type == "sports":
+        # gyms are often tag with sports_center + leisure fitness. but
+        # we want to search for those separately.
         return ["leisure=horse_riding", "leisure=ice_rink", "leisure=disc_golf_course",
-                "leisure=pitch", "leisure=sports_center"], {}
+                "leisure=pitch", "leisure=sports_center", "leisure=sports_centre",
+                "leisure=sports_hall"], { "sport": [ "fitness" ] }
     else:
         return [], {}
 
@@ -2532,7 +2569,7 @@ class Tools:
         :param setting: Urban-ness of the requested location. Controls search radius.
         :param category: Category of recreation to search for.
         """
-        allowed_categories = ["swimming", "playgrounds", "amusement", "sports"]
+        allowed_categories = ["swimming", "playgrounds", "amusement", "sports", "gyms"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags, not_tag_groups = recreation_to_tags(category)
