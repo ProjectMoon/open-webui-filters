@@ -1031,6 +1031,18 @@ RAW_DATA_BY_CATEGORY = {
     "cafe_or_bakery": {"cuisine"},
     "bars_and_pubs": {"cocktails", "reservation"},
 
+    # recreation
+    "sports": { "sport" },
+
+    # tourism
+    "accommodation": { "stars", "internet_access", "rooms", "check_in", "check_out" },
+    "tourist_attractions": { "museum", "outdoor", "zoo", "fee", "artwork_type",
+                             "artist_name" },
+
+    # education
+    "schools": { "capacity", "grades", "isced:level", "min_age", "max_age", "religion",
+                 "pedagogy", "language", "school:language" },
+
     # fuel etc
     "ev_fast_charging": {"operator", "fee", "socket:*", "payment:*", "authentication:*",
                          "motorcar", "truck"},
@@ -1166,10 +1178,6 @@ class OsmParser:
                 for tag, value in tags.items():
                     if tag == tag_name:
                         additional_info[tag] = value
-
-            # fallback if no value found in raw data.
-            if not tag_name in additional_info and not tag_name.endswith(':*'):
-                additional_info[tag_name] = "not recorded"
 
         return additional_info
 
@@ -2253,7 +2261,7 @@ def travel_category_to_tags(travel_type: str) -> Tuple[List[str], dict]:
 
 def healthcare_category_to_tags(healthcare_type: str) -> Tuple[List[str], dict]:
     if healthcare_type == "doctor":
-        return ["amenity=clinic", "amenity=doctors", "healthcare=doctor"], {}
+        return ["amenity=clinic", "amenity=doctors", "healthcare=doctor", "amenity=dentist"], {}
     elif healthcare_type == "hospital":
         return ["healthcare=hospital", "amenity=hospitals"], {}
     elif healthcare_type == "pharmacy":
