@@ -9,6 +9,18 @@
 
 # OpenStreetMap Tool
 
+**4.0.1:**
+Improvements:
+ - Limit map POI list height to 400px, with auto-scrolling.
+ - Add distance to map POI list.
+ - Add a valve setting for custom tile server.
+
+Bug fixes:
+ - Properly zoom in on map results when selecting from the POI list.
+ - Return phone number for search results that have it.
+ - Return POI-specific information for EV chargers, restaurants.
+ - Better POI descriptions on the generated map.
+
 **4.0.0:**
 Major Changes:
  - **UI Integration:** The tool is now able to generate an interactive

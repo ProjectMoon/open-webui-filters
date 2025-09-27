@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.0.0
+version: 4.0.1
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -11,7 +11,6 @@ import itertools
 import json
 import math
 import requests
-import uuid
 
 from fastapi.responses import HTMLResponse
 from pygments import highlight
@@ -42,7 +41,11 @@ class OsmPOI(BaseModel):
     """Represents a Point of Interest found during map search."""
     name: str = Field(description="Name of the Point of Interest.")
     address: Optional[str] = Field(description="Address of the Point of Interest.")
-    description: str = Field(description="Description of the Point of Interest.")
+    description: str = Field(description=("Useful one sentence description of the Point of Interest, "
+                                          "containing important or unique information. "
+                                          "Do not put distance here."))
+    distance: float = Field(description="Distance in km or miles from the search location.")
+    distance_unit: Literal["km", "mi", "kilometers", "miles"] = Field(description="Unit of distance.")
     lat: float = Field(description="Latitude of the Point of Interest.")
     lon: float = Field(description="Longitude of the Point of Interest.")
     osm_id: str = Field(description="OpenStreetMap ID of the Point of Interest.")
@@ -127,6 +130,8 @@ MAP_UI = """
 
          #poi-list {
              list-style-type: none;
+             max-height: 400px;
+             overflow-y: auto;
          }
 
          #poi-list li {
@@ -164,6 +169,13 @@ MAP_UI = """
              font-weight: 400;
          }
 
+         .poi-distance {
+             font-size: 0.8rem;
+             color: #444; /* Slightly lighter than default */
+             margin-top: 4px;
+             font-weight: 400;
+         }
+
          #poi-list li.active .poi-description {
              color: rgba(255, 255, 255, 0.9); /* Lighter text for active state */
          }
@@ -196,11 +208,11 @@ MAP_UI = """
          // Function to create the map
          function createMap(poiData) {
              // Create map centered on first POI
-             const map = L.map('map');
+             const map = L.map('map', { minZoom: 3, maxZoom: 18 });
              if (poiData.length > 0) map.setView([poiData[0].lat, poiData[0].lon], 12);
 
              // Add OpenStreetMap tiles
-             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+             L.tileLayer('{REPLACE_WITH_TILE_SERVER}', {
                  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
              }).addTo(map);
 
@@ -215,8 +227,9 @@ MAP_UI = """
                  const address = `<p>${poi.address}</p>`
                  const description = `<p>${poi.description}</p>`
                  const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`
+                 const distance = `${poi.distance.toFixed(2)} ${poi.distance_unit}`
 
-                 marker.bindPopup(`${header}${address}${description}${coords}`);
+                 marker.bindPopup(`${header}${address}${description}<p>${distance}</p>${coords}`);
                  markers.push(marker);
 
                  // Create list item dynamically
@@ -224,7 +237,8 @@ MAP_UI = """
 
                  listItem.innerHTML = `
                      <span>${poi.name}</span>
-                     <span class="poi-description">${poi.description}</span>`;
+                     <span class="poi-description">${poi.description}</span>
+                     <span class="poi-distance">${distance}</span>`;
                  listItem.onclick = () => focusOnMarker(index, map, markers);
                  listItem.classList.add('poi-item');
 
@@ -240,8 +254,7 @@ MAP_UI = """
              const marker = markers[index];
 
              // Fit map to show all markers with reduced padding
-             const bounds = poiData.map(poi => L.latLng([ poi.lat, poi.lon ]));
-             map.fitBounds(bounds, { padding: [15, 15], maxZoom: 13 });
+             map.flyTo(marker.getLatLng(), 15);
 
              // Open popup for selected marker
              marker.openPopup();
@@ -998,13 +1011,43 @@ class OsmUtils:
 # OSM Result Parsing
 #####################################################
 
+# For each search category, we may want to add additional tags
+# directly from the raw OSM data for a given search result. This is a
+# map of search category as defined by the tool functions to OSM tag
+# names. If a tag is in the list for the category, that tag will be
+# included in search results' additional_info field (assuming it
+# exists on the OSM entity).
+#
+# Tag values ending with a :* have a special meaning. The tool will
+# find all "sub-tags" that begin with the prefix. For example,
+# "socket:*" will find "socket:type2", "socket:type2:output",
+# "socket:type1" and so on. This can work on "sub-sub-tags" too.
+# For example, "socket:type2:*" would only look for tags that
+# start with the prefix "socket:type2".
+RAW_DATA_BY_CATEGORY = {
+    # food and drink
+    "sit_down_restaurants": {"cuisine", "reservation"},
+    "fast_food": {"cuisine"},
+    "cafe_or_bakery": {"cuisine"},
+    "bars_and_pubs": {"cocktails", "reservation"},
+
+    # fuel etc
+    "ev_fast_charging": {"operator", "fee", "socket:*", "payment:*", "authentication:*",
+                         "motorcar", "truck"},
+
+}
+
 class OsmParser:
     """All result parsing-related functionality in one place."""
 
-    def __init__(self, original_location: str, things_nearby: List[dict], include_raw_data=True):
+    def __init__(
+        self, original_location: str, things_nearby: List[dict],
+        category: Optional[str], include_raw_data=True
+    ):
         self.original_location = original_location
         self.things_nearby = things_nearby
         self.include_raw_data = include_raw_data
+        self.category = category
 
     @staticmethod
     def parse_address_from_address_obj(address) -> Optional[str]:
@@ -1101,7 +1144,37 @@ class OsmParser:
         return None
 
     @staticmethod
-    def parse_and_validate_thing(thing: dict) -> Optional[dict]:
+    def extract_raw_data(category: str, thing: dict) -> dict:
+        tags_to_extract = RAW_DATA_BY_CATEGORY.get(category, None)
+        additional_info = {}
+
+        if not tags_to_extract:
+            return additional_info
+
+        # loop through all tags in thing. if regular tag to extract,
+        # add to dict. if wildcard, do a beginswith check.
+        additiona_info = {}
+        tags: dict = thing.get('tags', {})
+
+        for tag_name in tags_to_extract:
+            if tag_name.endswith(':*'):
+                tag_prefix = tag_name.split(':*')[0] + ":"
+                for tag, value in tags.items():
+                    if tag.startswith(tag_prefix):
+                        additional_info[tag] = value
+            else:
+                for tag, value in tags.items():
+                    if tag == tag_name:
+                        additional_info[tag] = value
+
+            # fallback if no value found in raw data.
+            if not tag_name in additional_info and not tag_name.endswith(':*'):
+                additional_info[tag_name] = "not recorded"
+
+        return additional_info
+
+    @staticmethod
+    def parse_and_validate_thing(thing: dict, category: Optional[str]) -> Optional[dict]:
         """
         Parse an OSM result (node or post-processed way) and make it
         more friendly to work with. Helps remove ambiguity of the LLM
@@ -1159,6 +1232,11 @@ class OsmParser:
         friendly_thing['amenity_type'] = amenity_type if amenity_type else "unknown"
         friendly_thing['opening_hours'] = opening_hours if opening_hours else "not recorded"
         friendly_thing['website'] = website if website else osm_link
+        friendly_thing['phone_number'] = thing.get('phone', 'unknown')
+
+        if category:
+            friendly_thing['additional_info'] = OsmParser.extract_raw_data(category, thing)
+
         return friendly_thing
 
     def convert_and_validate_results(
@@ -1179,7 +1257,7 @@ class OsmParser:
             # Convert to friendlier data, drop results without names etc.
             # No need to instruct LLM to generate map links if we do it
             # instead.
-            friendly_thing = OsmParser.parse_and_validate_thing(thing)
+            friendly_thing = OsmParser.parse_and_validate_thing(thing, self.category)
             if not friendly_thing:
                 continue
 
@@ -1796,7 +1874,7 @@ class OsmSearcher:
 
             # attempt to update ways that have no names/addresses.
             if len(things_missing_names) > 0:
-                print(f"Updating {len(things_missing_names)} things with info")
+                print(f"[OSM] Updating {len(things_missing_names)} things with info")
                 for way_chunk in chunk_list(things_missing_names, 20):
                     updated = await self.enrich_from_nominatim(way_chunk)
                     ways = ways + updated
@@ -1853,8 +1931,8 @@ class OsmSearcher:
 
 
     async def search_nearby(
-            self, place: str, tags: List[str], limit: int=5, radius: int=4000,
-            category: str="POIs", not_tag_groups={}
+            self, place: str, tags: List[str], category: str, limit: int=5,
+            radius: int=4000, not_tag_groups={}, readable_category: str = "POIs"
     ) -> dict:
         """
         Main entrypoint into the searching logic. Checks header
@@ -1874,7 +1952,7 @@ class OsmSearcher:
             nominatim_result = []
 
         if not nominatim_result or len(nominatim_result) == 0:
-            await self.events.search_complete(category, place, [])
+            await self.events.search_complete(readable_category, place, [])
             return { "place_display_name": place, "results": NO_RESULTS_BAD_ADDRESS }
 
         try:
@@ -1890,30 +1968,30 @@ class OsmSearcher:
                 else:
                     place_display_name = place
             else:
-                print(f"WARN: Could not find display name for place: {place}")
+                print(f"[OSM] WARN: Could not find display name for place: {place}")
                 place_display_name = place
 
-            await self.events.searching(category, place_display_name, done=False, tags=tags)
+            await self.events.searching(readable_category, place_display_name, done=False, tags=tags)
 
             used_rel, bbox = self.calculate_bounding_box(nominatim_result)
 
-            print(f"[OSM] Searching for {category} near {place_display_name}")
+            print(f"[OSM] Searching for {readable_category} near {place_display_name}")
             things_nearby, sort_method = await self.search_and_rank(
                 nominatim_result, place, tags,
                 bbox, limit, radius, not_tag_groups
             )
 
             if not things_nearby or len(things_nearby) == 0:
-                await self.events.search_complete(category, place_display_name, [])
+                await self.events.search_complete(readable_category, place_display_name, [])
                 return { "place_display_name": place, "results": NO_RESULTS }
 
-            print(f"[OSM] Found {len(things_nearby)} {category} results near {place_display_name}")
+            print(f"[OSM] Found {len(things_nearby)} {readable_category} results near {place_display_name}")
 
             tag_type_str = ", ".join(OsmSearcher.flatten_tags(tags))
 
             # Only print the full result instructions if we
             # actually have something.
-            parser = OsmParser(place, things_nearby, include_raw_data=self.include_raw_data)
+            parser = OsmParser(place, things_nearby, category=category, include_raw_data=self.include_raw_data)
             search_results = parser.convert_and_validate_results(sort_message=sort_method)
             if search_results:
                 result_instructions = self.get_result_instructions(tag_type_str, used_rel)
@@ -1926,19 +2004,20 @@ class OsmSearcher:
             }
 
             # emit citations for the actual results.
-            await self.events.search_complete(category, place_display_name, things_nearby)
+            await self.events.search_complete(readable_category, place_display_name, things_nearby)
             for thing in search_results:
                 await self.events.emit_result_citation(thing)
 
             return { "place_display_name": place_display_name, "results": resp, "things": things_nearby }
         except ValueError:
-            await self.events.search_complete(category, place_display_name, [])
+            await self.events.search_complete(readable_category, place_display_name, [])
             return { "place_display_name": place_display_name, "results": NO_RESULTS, "things": [] }
         except Exception as e:
             print(e)
             await self.events.error(e)
             instructions = (f"No results were found, because of an error. "
-                            f"Tell the user that there was an error finding results.")
+                            f"Tell the user that there was an error finding results. "
+                            f"**Do not make up results. There are no results available because of an error.**")
 
             result = { "instructions": instructions, "results": [], "error_message": f"{e}" }
             return { "place_display_name": place_display_name, "results": result, "things": [] }
@@ -1947,7 +2026,7 @@ class OsmSearcher:
 async def do_osm_search(
         valves, user_valves, place, tags,
         category="POIs", event_emitter=None, limit=5, radius=4000,
-        setting='urban', not_tag_groups={}, radius_multiplier=1
+        setting='urban', not_tag_groups={}, radius_multiplier=1,
 ):
     # handle breaking 1.0 change, in case of old Nominatim valve settings.
     if valves.nominatim_url.endswith("/search"):
@@ -1971,9 +2050,11 @@ async def do_osm_search(
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place} ({setting} setting)")
     radius = radius * setting_to_multiplier(setting) * radius_multiplier
     events = OsmEventEmitter(event_emitter)
+    readable_category=category.replace("_", " ")
     searcher = OsmSearcher(valves, user_valves, events)
-    search = await searcher.search_nearby(place, tags, limit=limit, radius=radius,
-                                          category=category, not_tag_groups=not_tag_groups)
+    search = await searcher.search_nearby(place=place, tags=tags, limit=limit, radius=radius,
+                                          category=category, not_tag_groups=not_tag_groups,
+                                          readable_category=readable_category)
 
     # move place display name to top level results returned to client.
     place_display_name = search.get("place_display_name", None)
@@ -2289,6 +2370,10 @@ class Tools:
             default=False,
             description="Include raw OSM data in search results or not."
         )
+        tile_server: str = Field(
+            default="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            description="OSM Tile Server"
+        )
         pass
 
     class UserValves(BaseModel):
@@ -2329,7 +2414,7 @@ class Tools:
         :param longitude: The longitude portion of the GPS coordinate.
         :return: Information about the address or places near the coordinates.
         """
-        print(f"Searching for '{store_or_business_name}' near {latitude},{longitude}")
+        print(f"[OSM] Searching for '{store_or_business_name}' near {latitude},{longitude}")
         query = f"{store_or_business_name} {latitude},{longitude}"
         return await self.find_specific_place(query, __event_emitter__)
 
@@ -2362,7 +2447,7 @@ class Tools:
         try:
             result = await searcher.nominatim_search(address_or_place, limit=5)
             if result:
-                parser = OsmParser(address_or_place, result)
+                parser = OsmParser(address_or_place, result, category=None)
                 results = parser.convert_and_validate_results(
                     sort_message="importance", use_distance=False
                 )
@@ -2424,7 +2509,7 @@ class Tools:
         if validation_error:
             return validation_error
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    not_tag_groups=not_tag_groups)
 
@@ -2459,7 +2544,7 @@ class Tools:
         elif category == "playgrounds":
             limit = 10
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
@@ -2483,7 +2568,7 @@ class Tools:
         if validation_error:
             return validation_error
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
                                    limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    not_tag_groups=not_tag_groups)
 
@@ -2520,7 +2605,7 @@ class Tools:
         elif category == "public_transport":
             limit = 10
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
                                    limit=limit, radius=radius, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
@@ -2544,7 +2629,7 @@ class Tools:
         if validation_error:
             return validation_error
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    not_tag_groups=not_tag_groups)
 
@@ -2622,7 +2707,7 @@ class Tools:
         if validation_error:
             return validation_error
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category.replace("_", " "),
+        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    not_tag_groups=not_tag_groups)
 
@@ -2648,7 +2733,7 @@ class Tools:
             setting = normalize_setting(setting)
             user_valves = __user__["valves"] if "valves" in __user__ else None
             tags = ["amenity=fuel"]
-            return await do_osm_search(valves=valves, user_valves=user_valves, category="gas stations",
+            return await do_osm_search(valves=valves, user_valves=user_valves, category="fossil_fuels",
                                        setting=setting, radius=10000, place=place, tags=tags,
                                        event_emitter=__event_emitter__)
 
@@ -2675,7 +2760,7 @@ class Tools:
                 osm_socket_type = EV_CHARGER_TOOL_INPUT_CHARGER_TYPES[charger_type]
                 tags = [ f"socket:{osm_socket_type}=\\.*" ]
 
-            return await do_osm_search(valves=valves, user_valves=user_valves, category="EV chargers",
+            return await do_osm_search(valves=valves, user_valves=user_valves, category="ev_fast_charging",
                                        setting=setting, radius=10000, place=place, tags=tags,
                                        event_emitter=__event_emitter__)
 
@@ -2700,18 +2785,22 @@ class Tools:
         """
         Shows a map for search results. Takes a list of Points of Interest that
         were returned in a previous search function call. You **must** call another
-        function first to get information required for this function!
+        function first to get information required for this function! Make sure to
+        pass all necessary results into this function! When specifying descriptions,
+        make sure they are short and useful, mentioning unique or important info
+        about each result. **After calling this function, only acknowledge that the
+        map is generated. It will be rendered by the client!**
         :param category: Results category searched for.
         :param results: Point of Interest (POI) results from a previous function call.
         :return: HTML for displaying a search results map.
         """
         headers = {"Content-Disposition": "inline"}
         results_json = json.dumps(results)
-        print(results_json)
 
         ui_html = (MAP_UI
                    .replace("{REPLACE_WITH_POI_RESULTS}", results_json)
-                   .replace("{REPLACE_WITH_CATEGORY}", category))
+                   .replace("{REPLACE_WITH_CATEGORY}", category)
+                   .replace("{REPLACE_WITH_TILE_SERVER}", self.valves.tile_server))
 
         return HTMLResponse(content=ui_html, headers=headers)
 
