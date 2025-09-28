@@ -9,6 +9,9 @@
 
 # OpenStreetMap Tool
 
+**4.1.1:**
+ - Fix map UI responsive rendering by using media queries.
+
 **4.1.0:**
  - New POI type: gyms.
  - Add more category-specific information to search results.

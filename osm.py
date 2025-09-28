@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.0
+version: 4.1.1
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -82,11 +82,34 @@ MAP_UI = """
 
          .results {
              display: flex;
-             flex-direction: row;
              flex-wrap: wrap;
-             gap: 50px;
              align-items: start;
              justify-content: space-between;
+         }
+
+         @media (width <= 600px) {
+             .results {
+                 flex-direction: column;
+                 gap: 50px;
+             }
+
+             .map-container {
+                 flex: auto;
+                 min-width: 100%;
+             }
+         }
+
+
+         @media (width > 600px) {
+             .results {
+                 flex-direction: row;
+                 gap: 50px;
+             }
+
+
+             .map-container {
+                 flex: auto;
+             }
          }
 
          h1 {
@@ -111,11 +134,6 @@ MAP_UI = """
              font-weight: 600;
          }
 
-         .map-container {
-             flex: 1 auto;
-             min-width: 55%;
-         }
-
          #map {
              height: 400px;
              margin-bottom: 15px;
@@ -125,7 +143,7 @@ MAP_UI = """
          }
 
          .poi-list-container {
-             flex: 2 auto;
+             flex: initial;
          }
 
          #poi-list {
