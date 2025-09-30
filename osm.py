@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.1
+version: 4.1.2
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -329,7 +329,7 @@ TravelCategory: TypeAlias = Literal[
 ]
 
 HealthcareCategory: TypeAlias = Literal[
-    'doctor', 'hospital', 'pharmacy'
+    'doctor', 'dentist', 'hospital', 'pharmacy'
 ]
 
 EducationCategory: TypeAlias = Literal[
@@ -2316,7 +2316,9 @@ def travel_category_to_tags(travel_type: str) -> Tuple[List[str], dict]:
 
 def healthcare_category_to_tags(healthcare_type: str) -> Tuple[List[str], dict]:
     if healthcare_type == "doctor":
-        return ["amenity=clinic", "amenity=doctors", "healthcare=doctor", "amenity=dentist"], {}
+        return ["amenity=clinic", "amenity=doctors", "healthcare=doctor"], {}
+    elif healthcare_type == "dentist":
+        return ["amenity=dentist", "healthcare=dentist", "healthcare:speciality=orthodontics"], {}
     elif healthcare_type == "hospital":
         return ["healthcare=hospital", "amenity=hospitals"], {}
     elif healthcare_type == "pharmacy":
@@ -2676,14 +2678,14 @@ class Tools:
         self, place: str, category: HealthcareCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
     ) -> str:
         """
-        Find healthcare, doctors, hospitals, and pharmacies on OpenStreetMap.
+        Find healthcare, doctors, dentists, hospitals, and pharmacies on OpenStreetMap.
         For setting, specify if the place is an urban area, a suburb, or a rural location.
         If it is unclear what category the user wants, ask for clarification.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
         :param setting: Urban-ness of the requested location. Controls search radius.
         :param category: Category of healthcare to search for.
         """
-        allowed_categories = ["doctor", "hospital", "pharmacy"]
+        allowed_categories = ["doctor", "dentist", "hospital", "pharmacy"]
         setting = normalize_setting(setting)
         user_valves = __user__["valves"] if "valves" in __user__ else None
         tags, not_tag_groups = healthcare_category_to_tags(category)
