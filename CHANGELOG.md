@@ -9,6 +9,12 @@
 
 # OpenStreetMap Tool
 
+**4.1.3:**
+ - Fix map vertical sizing issues in newer versions of openwebui.
+
+**4.1.2:*
+ - ???
+
 **4.1.1:**
  - Fix map UI responsive rendering by using media queries.
 

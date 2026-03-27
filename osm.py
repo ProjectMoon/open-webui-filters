@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.2
+version: 4.1.3
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -68,11 +68,13 @@ MAP_UI = """
              box-sizing: border-box;
          }
 
+
          body {
              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
              color: #333;
              line-height: 1.6;
              padding: 12px;
+             min-height: 560px;
          }
 
          .container {
@@ -200,7 +202,7 @@ MAP_UI = """
         </style>
     </head>
     <body>
-        <div class="container">
+        <div class="container" id="app">
             <h1>Map Results for {REPLACE_WITH_CATEGORY}</h1>
             <p class="subtitle">Data from OpenStreetMap</p>
 
@@ -223,11 +225,35 @@ MAP_UI = """
          // [ { name, coords, lat, lon, description } ]
          const poiData = {REPLACE_WITH_POI_RESULTS};
 
+         function getContentHeight() {
+             const app = document.getElementById('app');
+             if (!app) return 0;
+             return Math.ceil(app.getBoundingClientRect().height);
+         }
+
+         function notifyParentOfHeight() {
+             const height = getContentHeight();
+             if (!window.parent || height <= 0) return;
+
+             window.parent.postMessage(
+                 { type: 'iframe:height', height: height + 24 },
+                 '*'
+             );
+         }
+
+         function scheduleHeightReport() {
+             requestAnimationFrame(() => notifyParentOfHeight());
+             setTimeout(notifyParentOfHeight, 100);
+             setTimeout(notifyParentOfHeight, 300);
+         }
+
          // Function to create the map
          function createMap(poiData) {
              // Create map centered on first POI
              const map = L.map('map', { minZoom: 3, maxZoom: 18 });
-             if (poiData.length > 0) map.setView([poiData[0].lat, poiData[0].lon], 12);
+             if (poiData.length > 0) {
+                 map.setView([poiData[0].lat, poiData[0].lon], 12);
+             }
 
              // Add OpenStreetMap tiles
              L.tileLayer('{REPLACE_WITH_TILE_SERVER}', {
@@ -240,19 +266,19 @@ MAP_UI = """
              // Add markers to map and create list items dynamically
              poiData.forEach((poi, index) => {
                  const marker = L.marker([poi.lat, poi.lon]).addTo(map);
-                 const osmLink = `https://www.openstreetmap.org/${poi.osm_type}/${poi.osm_id}`
-                 const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`
-                 const address = `<p>${poi.address}</p>`
-                 const description = `<p>${poi.description}</p>`
-                 const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`
-                 const distance = `${poi.distance.toFixed(2)} ${poi.distance_unit}`
+                 const osmLink = `https://www.openstreetmap.org/${poi.osm_type}/${poi.osm_id}`;
+                 const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`;
+                 const address = `<p>${poi.address ?? ''}</p>`;
+                 const description = `<p>${poi.description}</p>`;
+                 const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`;
+                 const distance = `${poi.distance.toFixed(2)} ${poi.distance_unit}`;
 
                  marker.bindPopup(`${header}${address}${description}<p>${distance}</p>${coords}`);
+                 marker.on('popupopen', scheduleHeightReport);
+                 marker.on('popupclose', scheduleHeightReport);
                  markers.push(marker);
 
-                 // Create list item dynamically
                  const listItem = document.createElement('li');
-
                  listItem.innerHTML = `
                      <span>${poi.name}</span>
                      <span class="poi-description">${poi.description}</span>
@@ -260,7 +286,6 @@ MAP_UI = """
                  listItem.onclick = () => focusOnMarker(index, map, markers);
                  listItem.classList.add('poi-item');
 
-                 // Add to list
                  document.getElementById('poi-list').appendChild(listItem);
              });
 
@@ -271,14 +296,10 @@ MAP_UI = """
          function focusOnMarker(index, map, markers) {
              const marker = markers[index];
 
-             // Fit map to show all markers with reduced padding
              map.flyTo(marker.getLatLng(), 15);
-
-             // Open popup for selected marker
              marker.openPopup();
-
-             // Update active state in list
              updateActiveListItem(index);
+             scheduleHeightReport();
          }
 
          // Function to update active list item
@@ -297,7 +318,28 @@ MAP_UI = """
          const { map, markers } = createMap(poiData);
 
          // Initialize with first POI selected
-         updateActiveListItem(0);
+         if (poiData.length > 0) {
+             updateActiveListItem(0);
+         }
+
+         window.addEventListener('load', scheduleHeightReport);
+         window.addEventListener('resize', scheduleHeightReport);
+
+         map.whenReady(() => {
+             scheduleHeightReport();
+             setTimeout(() => {
+                 map.invalidateSize();
+                 scheduleHeightReport();
+             }, 100);
+         });
+
+         map.on('load zoomend moveend resize', scheduleHeightReport);
+
+         const app = document.getElementById('app');
+         if (app) {
+             const resizeObserver = new ResizeObserver(() => notifyParentOfHeight());
+             resizeObserver.observe(app);
+         }
         </script>
     </body>
 </html>
