@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.3
+version: 4.1.4
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -2188,7 +2188,7 @@ class OsmNavigator:
             route = router.calculate_route(start, destination)
 
             if not route:
-                await self.evnts.event_navigating(done=True)
+                await self.events.navigating(done=True)
                 return NO_RESULTS
 
             total_distance = round(route.get('summary', {}).get('distance', ''), 2)
