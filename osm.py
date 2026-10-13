@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.4
+version: 4.1.6
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -69,135 +69,89 @@ MAP_UI = """
          }
 
 
+         :root {
+             --text: #263445;
+             --muted: #526171;
+             --surface: #fff;
+             --hover: #f1f5f9;
+             --border: #dce3eb;
+             --accent: #1769aa;
+         }
+
          body {
              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-             color: #333;
-             line-height: 1.6;
+             color: var(--text);
+             background: var(--surface);
+             line-height: 1.5;
              padding: 12px;
-             min-height: 560px;
          }
 
-         .container {
-             max-width: 1200px;
-             margin: 0 auto;
-         }
-
+         .container { max-width: 1200px; margin: 0 auto; }
          .results {
-             display: flex;
-             flex-wrap: wrap;
+             display: grid;
+             grid-template-columns: minmax(0, 1fr) 300px;
+             gap: 16px;
              align-items: start;
-             justify-content: space-between;
          }
-
-         @media (width <= 600px) {
-             .results {
-                 flex-direction: column;
-                 gap: 50px;
-             }
-
-             .map-container {
-                 flex: auto;
-                 min-width: 100%;
-             }
-         }
-
-
-         @media (width > 600px) {
-             .results {
-                 flex-direction: row;
-                 gap: 50px;
-             }
-
-
-             .map-container {
-                 flex: auto;
-             }
-         }
-
-         h1 {
-             font-size: 2rem;
-             font-weight: 700;
-             color: #2c3e50;
-             text-align: center;
-             margin-bottom: 5px;
-         }
-
-         .subtitle {
-             font-size: 0.9rem;
-             color: #6c757d;
-             text-align: center;
-             margin-bottom: 15px;
-         }
-
-         h2 {
-             font-size: 1.3rem;
-             color: #34495e;
-             margin: 20px 0 10px;
-             font-weight: 600;
-         }
-
-         #map {
-             height: 400px;
-             margin-bottom: 15px;
-             border-radius: 8px;
-             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-             border: 1px solid #ddd;
-         }
-
-         .poi-list-container {
-             flex: initial;
-         }
-
-         #poi-list {
-             list-style-type: none;
-             max-height: 400px;
-             overflow-y: auto;
-         }
-
-         #poi-list li {
+         .map-container, .poi-list-container { min-width: 0; }
+         h1 { font-size: 1.4rem; text-align: center; margin-bottom: 4px; }
+         .subtitle { font-size: 0.85rem; color: var(--muted); text-align: center; margin-bottom: 12px; }
+         h2 { font-size: 1.1rem; margin: 0 0 8px; font-weight: 600; }
+         #map { height: 460px; border-radius: 8px; border: 1px solid var(--border); }
+         #poi-list { list-style: none; max-height: 460px; overflow-y: auto; }
+         #poi-list li { margin-bottom: 8px; }
+         .poi-item {
+             width: 100%;
              padding: 10px 12px;
-             margin: 0;
-             background-color: white;
+             background: var(--surface);
              border-radius: 6px;
              cursor: pointer;
-             transition: all 0.2s ease;
-             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-             border: 1px solid #e9ecef;
-             font-weight: 600;
-             color: #495057;
+             border: 1px solid var(--border);
+             color: var(--text);
+             font: inherit;
+             text-align: left;
              display: flex;
              flex-direction: column;
+             overflow-wrap: anywhere;
          }
-
-         #poi-list li:hover {
-             transform: translateY(-2px);
-             box-shadow: 0 3px 8px rgba(0, 0, 0, 0.1);
-             background-color: #f8f9fa;
-             color: #2c3e50;
+         .poi-item:hover { background: var(--hover); }
+         .poi-item:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+         .poi-item.active { background: var(--accent); color: #fff; }
+         .poi-title { font-weight: 600; }
+         .poi-description, .poi-distance { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
+         .poi-item.active .poi-description, .poi-item.active .poi-distance { color: #fff; }
+         .poi-marker { background: transparent; border: 0; }
+         .poi-marker span {
+             display: grid;
+             place-items: center;
+             width: 32px;
+             height: 32px;
+             border-radius: 50%;
+             border: 2px solid #fff;
+             background: #1769aa;
+             color: #fff;
+             font: bold 14px/1 'Segoe UI', sans-serif;
+             box-shadow: 0 2px 6px #0006;
          }
-
-         #poi-list li.active {
-             background-color: #3498db;
-             color: white;
-             box-shadow: 0 3px 8px rgba(52, 152, 219, 0.2);
+         .poi-marker.active span { background: #a63b00; outline: 3px solid #fff; }
+         .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--text); }
+         .leaflet-popup-content a { color: var(--accent); }
+         .empty-results { padding: 24px; color: var(--muted); }
+         @media (max-width: 759px) {
+             .results { grid-template-columns: minmax(0, 1fr); }
+             #map { height: 340px; }
+             #poi-list { max-height: none; }
          }
-
-         .poi-description {
-             font-size: 0.8rem;
-             color: #555; /* Slightly lighter than default */
-             margin-top: 4px;
-             font-weight: 400;
-         }
-
-         .poi-distance {
-             font-size: 0.8rem;
-             color: #444; /* Slightly lighter than default */
-             margin-top: 4px;
-             font-weight: 400;
-         }
-
-         #poi-list li.active .poi-description {
-             color: rgba(255, 255, 255, 0.9); /* Lighter text for active state */
+         @media (prefers-color-scheme: dark) {
+             :root {
+                 --text: #e5edf5;
+                 --muted: #b0becd;
+                 --surface: #18212d;
+                 --hover: #253244;
+                 --border: #3a495b;
+                 --accent: #247abd;
+             }
+             .leaflet-popup-content a { color: #8bcaff; }
          }
         </style>
     </head>
@@ -231,9 +185,11 @@ MAP_UI = """
              return Math.ceil(app.getBoundingClientRect().height);
          }
 
+         let lastReportedHeight = 0;
          function notifyParentOfHeight() {
              const height = getContentHeight();
-             if (!window.parent || height <= 0) return;
+             if (!window.parent || height <= 0 || height === lastReportedHeight) return;
+             lastReportedHeight = height;
 
              window.parent.postMessage(
                  { type: 'iframe:height', height: height + 24 },
@@ -241,19 +197,20 @@ MAP_UI = """
              );
          }
 
+         let heightReportPending = false;
          function scheduleHeightReport() {
-             requestAnimationFrame(() => notifyParentOfHeight());
-             setTimeout(notifyParentOfHeight, 100);
-             setTimeout(notifyParentOfHeight, 300);
+             if (heightReportPending) return;
+             heightReportPending = true;
+             requestAnimationFrame(() => {
+                 heightReportPending = false;
+                 notifyParentOfHeight();
+             });
          }
 
          // Function to create the map
          function createMap(poiData) {
-             // Create map centered on first POI
+             // Fit the initial view to the search results
              const map = L.map('map', { minZoom: 3, maxZoom: 18 });
-             if (poiData.length > 0) {
-                 map.setView([poiData[0].lat, poiData[0].lon], 12);
-             }
 
              // Add OpenStreetMap tiles
              L.tileLayer('{REPLACE_WITH_TILE_SERVER}', {
@@ -265,7 +222,14 @@ MAP_UI = """
 
              // Add markers to map and create list items dynamically
              poiData.forEach((poi, index) => {
-                 const marker = L.marker([poi.lat, poi.lon]).addTo(map);
+                 const icon = L.divIcon({
+                     className: 'poi-marker',
+                     html: `<span>${index + 1}</span>`,
+                     iconSize: [32, 32],
+                     iconAnchor: [16, 16],
+                     popupAnchor: [0, -18]
+                 });
+                 const marker = L.marker([poi.lat, poi.lon], { icon, title: poi.name }).addTo(map);
                  const osmLink = `https://www.openstreetmap.org/${poi.osm_type}/${poi.osm_id}`;
                  const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`;
                  const address = `<p>${poi.address ?? ''}</p>`;
@@ -274,20 +238,37 @@ MAP_UI = """
                  const distance = `${poi.distance.toFixed(2)} ${poi.distance_unit}`;
 
                  marker.bindPopup(`${header}${address}${description}<p>${distance}</p>${coords}`);
-                 marker.on('popupopen', scheduleHeightReport);
+                 marker.on('popupopen', () => updateActiveListItem(index, markers, true));
                  marker.on('popupclose', scheduleHeightReport);
                  markers.push(marker);
 
                  const listItem = document.createElement('li');
-                 listItem.innerHTML = `
-                     <span>${poi.name}</span>
-                     <span class="poi-description">${poi.description}</span>
-                     <span class="poi-distance">${distance}</span>`;
-                 listItem.onclick = () => focusOnMarker(index, map, markers);
-                 listItem.classList.add('poi-item');
-
+                 const button = document.createElement('button');
+                 button.type = 'button';
+                 button.className = 'poi-item';
+                 button.setAttribute('aria-pressed', 'false');
+                 for (const [className, text] of [
+                     ['poi-title', `${index + 1}. ${poi.name}`],
+                     ['poi-description', poi.description],
+                     ['poi-distance', distance]
+                 ]) {
+                     const span = document.createElement('span');
+                     span.className = className;
+                     span.textContent = text;
+                     button.appendChild(span);
+                 }
+                 button.onclick = () => focusOnMarker(index, map, markers);
+                 listItem.appendChild(button);
                  document.getElementById('poi-list').appendChild(listItem);
              });
+
+             if (poiData.length === 1) {
+                 map.setView(markers[0].getLatLng(), 15);
+             } else {
+                 map.fitBounds(L.latLngBounds(markers.map(marker => marker.getLatLng())), {
+                     padding: [32, 32], maxZoom: 15
+                 });
+             }
 
              return { map, markers };
          }
@@ -298,48 +279,54 @@ MAP_UI = """
 
              map.flyTo(marker.getLatLng(), 15);
              marker.openPopup();
-             updateActiveListItem(index);
+             updateActiveListItem(index, markers);
              scheduleHeightReport();
          }
 
          // Function to update active list item
-         function updateActiveListItem(index) {
-             const listItems = document.querySelectorAll('#poi-list li');
+         function updateActiveListItem(index, markers, reveal = false) {
+             const listItems = document.querySelectorAll('.poi-item');
              listItems.forEach((item, i) => {
-                 if (i === index) {
-                     item.classList.add('active');
-                 } else {
-                     item.classList.remove('active');
+                 const active = i === index;
+                 item.classList.toggle('active', active);
+                 item.setAttribute('aria-pressed', String(active));
+                 markers[i].getElement()?.classList.toggle('active', active);
+                 if (active && reveal) {
+                     const list = document.getElementById('poi-list');
+                     const itemBounds = item.getBoundingClientRect();
+                     const listBounds = list.getBoundingClientRect();
+                     if (itemBounds.top < listBounds.top) list.scrollTop -= listBounds.top - itemBounds.top;
+                     else if (itemBounds.bottom > listBounds.bottom) list.scrollTop += itemBounds.bottom - listBounds.bottom;
                  }
              });
+             scheduleHeightReport();
          }
 
-         // Initialize map and markers
-         const { map, markers } = createMap(poiData);
-
-         // Initialize with first POI selected
          if (poiData.length > 0) {
-             updateActiveListItem(0);
+             const { map, markers } = createMap(poiData);
+             map.whenReady(() => {
+                 updateActiveListItem(0, markers);
+                 scheduleHeightReport();
+             });
+             const mapResizeObserver = new ResizeObserver(() => {
+                 requestAnimationFrame(() => {
+                     map.invalidateSize({ pan: false });
+                     scheduleHeightReport();
+                 });
+             });
+             mapResizeObserver.observe(document.getElementById('map'));
+         } else {
+             document.querySelector('.results').replaceChildren();
+             const empty = document.createElement('p');
+             empty.className = 'empty-results';
+             empty.textContent = 'No results to display.';
+             document.querySelector('.results').appendChild(empty);
          }
 
          window.addEventListener('load', scheduleHeightReport);
          window.addEventListener('resize', scheduleHeightReport);
-
-         map.whenReady(() => {
-             scheduleHeightReport();
-             setTimeout(() => {
-                 map.invalidateSize();
-                 scheduleHeightReport();
-             }, 100);
-         });
-
-         map.on('load zoomend moveend resize', scheduleHeightReport);
-
-         const app = document.getElementById('app');
-         if (app) {
-             const resizeObserver = new ResizeObserver(() => notifyParentOfHeight());
-             resizeObserver.observe(app);
-         }
+         const resizeObserver = new ResizeObserver(scheduleHeightReport);
+         resizeObserver.observe(document.getElementById('app'));
         </script>
     </body>
 </html>
