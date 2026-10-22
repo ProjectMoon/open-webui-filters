@@ -102,8 +102,11 @@ def normalize_map_pois(results) -> Tuple[List[dict], List[str]]:
 SHOW_MAP_CONTEXT = {
     "status": "success",
     "message": (
-        "The interactive map is now displayed to the user. Reply with one "
-        "short sentence acknowledging that the map is shown. Do NOT include "
+        "The interactive map is already displayed to the user, directly ABOVE "
+        "your reply. Do not announce the map or point to where it is, and never "
+        "write placeholders such as [Map displayed] or [map]. Instead, reply "
+        "with one or two short, natural sentences of useful commentary, such as "
+        "which result is closest or which stands out and why. Do NOT include "
         "images, markdown image syntax like ![...](...), map links, or "
         "map/tile URLs. Do NOT re-list the results or add a citation list."
     ),
@@ -2965,8 +2968,8 @@ class Tools:
         function first to get information required for this function! Make sure to
         pass all necessary results into this function! When specifying descriptions,
         make sure they are short and useful, mentioning unique or important info
-        about each result. **After calling this function, only acknowledge that the
-        map is generated. It will be rendered by the client!** Do not re-list the
+        about each result. **The map is rendered by the client above your reply;
+        do not announce it or write placeholders like [Map displayed].** Do not re-list the
         results, and do not append a citation list or list of links — the map
         and the sources are displayed automatically. Never put images, markdown
         image syntax, or map links in your reply. Pass lat, lon, and distance as

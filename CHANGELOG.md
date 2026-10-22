@@ -15,9 +15,11 @@
    lat/lon/distance to numbers, and the map UI no longer aborts on a bad
    distance. Results without usable coordinates are reported back to the
    model instead of breaking the map.
- - `show_map` gives the model its own result message: acknowledge the map
-   in one sentence, no images, markdown image syntax, or map links (models
-   were inventing `![map](https://www.openstreetmap.org/#map=...)` images).
+ - `show_map` gives the model its own result message: the map is already
+   shown above the reply, so give a sentence or two of useful commentary
+   instead of announcing it (no `[Map displayed]` placeholders), and no
+   images, markdown image syntax, or map links (models were inventing
+   `![map](https://www.openstreetmap.org/#map=...)` images).
  - Escape `</` in embedded POI data so it can't close the map's script tag.
  - Stricter citation format instructions for all search results: only the
    bare ID in brackets (`[3]`), with examples of wrong forms such as
