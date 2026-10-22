@@ -3,3 +3,5 @@ chromatest.py
 env/
 gpu_layer_scaler_rocm.py
 .known_hosts
+__pycache__/
+*.pyc
