@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.8
+version: 4.1.9
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -10,6 +10,7 @@ requirements: openrouteservice, pygments
 import itertools
 import json
 import math
+import re
 import requests
 
 from fastapi.responses import HTMLResponse
@@ -51,6 +52,62 @@ class OsmPOI(BaseModel):
     osm_id: str = Field(description="OpenStreetMap ID of the Point of Interest.")
     osm_type: NWR = Field(description="OpenStreetMap entity type of the Point of Interest.")
     pass
+
+
+def _coerce_float(value) -> Optional[float]:
+    """Best-effort float: models sometimes send "0.486 km" or "52,38"."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if math.isfinite(value) else None
+    if isinstance(value, str):
+        match = re.match(r"\s*(-?\d+(?:[.,]\d+)?)", value)
+        if match:
+            return float(match.group(1).replace(",", "."))
+    return None
+
+
+def normalize_map_pois(results) -> Tuple[List[dict], List[str]]:
+    """
+    Open WebUI passes tool arguments through without validating them
+    against OsmPOI, so coerce the numeric fields the map UI does math on.
+    Returns the cleaned POIs and a list of problems that make a POI unusable.
+    """
+    pois, problems = [], []
+    for index, poi in enumerate(results or []):
+        if isinstance(poi, BaseModel):
+            poi = poi.model_dump()
+        if not isinstance(poi, dict):
+            problems.append(f"result {index + 1} is not an object")
+            continue
+
+        poi = dict(poi)
+        lat, lon = _coerce_float(poi.get("lat")), _coerce_float(poi.get("lon"))
+        if lat is None or lon is None:
+            problems.append(f"result {index + 1} ({poi.get('name', '?')}) has no numeric lat/lon")
+            continue
+        poi["lat"], poi["lon"] = lat, lon
+
+        raw_distance = poi.get("distance")
+        poi["distance"] = _coerce_float(raw_distance)
+        if not poi.get("distance_unit") and isinstance(raw_distance, str):
+            unit = re.search(r"\b(km|mi|kilometers|miles)\b", raw_distance)
+            poi["distance_unit"] = unit.group(1) if unit else None
+        pois.append(poi)
+    return pois, problems
+
+
+# Sent to the model instead of Open WebUI's generic "Embedded UI result is
+# active" message, to stop it from faking a map in its reply.
+SHOW_MAP_CONTEXT = {
+    "status": "success",
+    "message": (
+        "The interactive map is now displayed to the user. Reply with one "
+        "short sentence acknowledging that the map is shown. Do NOT include "
+        "images, markdown image syntax like ![...](...), map links, or "
+        "map/tile URLs. Do NOT re-list the results or add a citation list."
+    ),
+}
 
 MAP_UI = """
 <!DOCTYPE html>
@@ -234,10 +291,16 @@ MAP_UI = """
                  const header = `<h3><a target="_blank" href="${osmLink}">${poi.name}</a></h3>`;
                  const address = `<p>${poi.address ?? ''}</p>`;
                  const description = `<p>${poi.description}</p>`;
-                 const coords = `<p>Coordinates: ${poi.lat.toFixed(4)}, ${poi.lon.toFixed(4)}</p>`;
-                 const distance = `${poi.distance.toFixed(2)} ${poi.distance_unit}`;
+                 const coords = `<p>Coordinates: ${Number(poi.lat).toFixed(4)}, ${Number(poi.lon).toFixed(4)}</p>`;
+                 // Models sometimes send distance as a string ("0.5 km");
+                 // a bad value must not abort the whole map.
+                 const distanceValue = Number.parseFloat(poi.distance);
+                 const distance = Number.isFinite(distanceValue)
+                     ? `${distanceValue.toFixed(2)} ${poi.distance_unit ?? ''}`.trim()
+                     : '';
+                 const distanceHtml = distance ? `<p>${distance}</p>` : '';
 
-                 marker.bindPopup(`${header}${address}${description}<p>${distance}</p>${coords}`);
+                 marker.bindPopup(`${header}${address}${description}${distanceHtml}${coords}`);
                  marker.on('popupopen', () => updateActiveListItem(index, markers, true));
                  marker.on('popupclose', scheduleHeightReport);
                  markers.push(marker);
@@ -585,16 +648,16 @@ NO_CITATION_LIST = (
     "list is redundant. Use inline citations in the message body only."
 )
 
+CITATION_FORMAT = (
+    "Cite with ONLY the bare citation_id inside square brackets, e.g. [3]. "
+    "No words, prefixes, or other punctuation inside or around the brackets. "
+    "WRONG: [citation 3], [id:3], [source 3], [Citation: 3], (3), [^3]. "
+    "RIGHT: [3]."
+)
+
 CITATION_INSTRUCTIONS = [
-    (
-        "Always use inline citations in the format "
-        "[id], using the citation_id of each source."
-    ),
-    (
-        "The citation ID must be in the form of [<citation_id>]. "
-        "For example, if the citation_id ID is 123456789, print [123456789]."
-    ),
-    "Do NOT print [id:123456789]. That will not work. ",
+    "Always use inline citations, using the citation_id of each source.",
+    CITATION_FORMAT,
     "Always use inline citations for information relating to a result. ",
     NO_CITATION_LIST
 ]
@@ -760,7 +823,8 @@ def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
         "Make sure that your results are in the actual location the user is talking about, "
         "and not a place of the same name in a different country."
         f"{rel_inst}"
-        f" Use inline citations [id] for information relating to a result. "
+        f" Use inline citations for information relating to a result. "
+        f"{CITATION_FORMAT} "
         f"{NO_CITATION_LIST}"
     )
 
@@ -2894,7 +2958,7 @@ class Tools:
             )
 
 
-    def show_map(self, category: POICategory, results: List[OsmPOI]) -> HTMLResponse:
+    def show_map(self, category: POICategory, results: List[OsmPOI]):
         """
         Shows a map for search results. Takes a list of Points of Interest that
         were returned in a previous search function call. You **must** call another
@@ -2904,20 +2968,36 @@ class Tools:
         about each result. **After calling this function, only acknowledge that the
         map is generated. It will be rendered by the client!** Do not re-list the
         results, and do not append a citation list or list of links — the map
-        and the sources are displayed automatically.
+        and the sources are displayed automatically. Never put images, markdown
+        image syntax, or map links in your reply. Pass lat, lon, and distance as
+        plain numbers (distance 0.49, not "0.49 km").
         :param category: Results category searched for.
         :param results: Point of Interest (POI) results from a previous function call.
         :return: HTML for displaying a search results map.
         """
+        pois, problems = normalize_map_pois(results)
+        if not pois:
+            return {
+                "status": "error",
+                "message": ("No map was shown: none of the results could be placed on "
+                            "a map. Pass results exactly as returned by the search "
+                            "function, with numeric lat, lon, and distance. "
+                            f"Problems: {'; '.join(problems) or 'no results given'}"),
+            }
+
         headers = {"Content-Disposition": "inline"}
-        results_json = json.dumps(results)
+        # Escape "</" so a name or description can't close the <script> early.
+        results_json = json.dumps(pois).replace("</", "<\\/")
 
         ui_html = (MAP_UI
                    .replace("{REPLACE_WITH_POI_RESULTS}", results_json)
                    .replace("{REPLACE_WITH_CATEGORY}", category)
                    .replace("{REPLACE_WITH_TILE_SERVER}", self.valves.tile_server))
 
-        return HTMLResponse(content=ui_html, headers=headers)
+        context = dict(SHOW_MAP_CONTEXT)
+        if problems:
+            context["skipped"] = problems
+        return HTMLResponse(content=ui_html, headers=headers), context
 
 
     # This function exists to help catch situations where the user is

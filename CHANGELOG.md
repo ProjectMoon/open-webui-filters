@@ -9,6 +9,20 @@
 
 # OpenStreetMap Tool
 
+**4.1.9:**
+ - Fix map not rendering (stuck in a scrollable box) when the model passes
+   `distance` as a string like `"0.486 km"`: `show_map` now coerces
+   lat/lon/distance to numbers, and the map UI no longer aborts on a bad
+   distance. Results without usable coordinates are reported back to the
+   model instead of breaking the map.
+ - `show_map` gives the model its own result message: acknowledge the map
+   in one sentence, no images, markdown image syntax, or map links (models
+   were inventing `![map](https://www.openstreetmap.org/#map=...)` images).
+ - Escape `</` in embedded POI data so it can't close the map's script tag.
+ - Stricter citation format instructions for all search results: only the
+   bare ID in brackets (`[3]`), with examples of wrong forms such as
+   `[citation 3]`.
+
 **4.1.3:**
  - Fix map vertical sizing issues in newer versions of openwebui.
 
