@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.7
+version: 4.1.8
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -571,6 +571,20 @@ OSM_LINK_INSTRUCTIONS = (
     f"{EXAMPLE_OSM_LINK}\n\n"
 )
 
+NO_CITATION_LIST_PROHIBITION = (
+    "**Do NOT** append a citation list, reference list, source list, or "
+    "list of links at the end of your message."
+)
+
+# The interface automatically renders a source/citation entry below the
+# message for every result, so a manually printed list of citations or
+# links at the end of the message is always redundant.
+NO_CITATION_LIST = (
+    f"{NO_CITATION_LIST_PROHIBITION} The interface automatically displays "
+    "the source of each result below your message, so a manual "
+    "list is redundant. Use inline citations in the message body only."
+)
+
 CITATION_INSTRUCTIONS = [
     (
         "Always use inline citations in the format "
@@ -581,7 +595,8 @@ CITATION_INSTRUCTIONS = [
         "For example, if the citation_id ID is 123456789, print [123456789]."
     ),
     "Do NOT print [id:123456789]. That will not work. ",
-    "Always use inline citations for information relating to a result. "
+    "Always use inline citations for information relating to a result. ",
+    NO_CITATION_LIST
 ]
 
 #####################################################
@@ -628,7 +643,8 @@ def specific_place_instructions() -> str:
         "address, place, landmark, or location the user is asking "
         "about. **IMPORTANT!:** Tell the user all relevant information, "
         "including address, contact information, and the OpenStreetMap link. "
-        "Make the map link into a nice human-readable markdown link."
+        "Make the map link into a nice human-readable markdown link. "
+        f"{NO_CITATION_LIST_PROHIBITION}"
     )
 
 def navigation_instructions(travel_type) -> str:
@@ -722,7 +738,7 @@ def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
     """
     if used_rel:
         rel_inst = (
-            "**Mention that the central point of the town or city that the user is searching in "
+            " **Mention that the central point of the town or city that the user is searching in "
             "was used, and that results may not cover the whole area.**"
         )
     else:
@@ -744,6 +760,8 @@ def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
         "Make sure that your results are in the actual location the user is talking about, "
         "and not a place of the same name in a different country."
         f"{rel_inst}"
+        f" Use inline citations [id] for information relating to a result. "
+        f"{NO_CITATION_LIST}"
     )
 
 
@@ -2884,7 +2902,9 @@ class Tools:
         pass all necessary results into this function! When specifying descriptions,
         make sure they are short and useful, mentioning unique or important info
         about each result. **After calling this function, only acknowledge that the
-        map is generated. It will be rendered by the client!**
+        map is generated. It will be rendered by the client!** Do not re-list the
+        results, and do not append a citation list or list of links — the map
+        and the sources are displayed automatically.
         :param category: Results category searched for.
         :param results: Point of Interest (POI) results from a previous function call.
         :return: HTML for displaying a search results map.
