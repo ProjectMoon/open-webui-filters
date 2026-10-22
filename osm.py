@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.1.6
+version: 4.1.7
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
@@ -837,11 +837,11 @@ class OsmEventEmitter:
             },
         })
 
-    async def search_complete(self, category: str, place: str, items=[]):
+    async def search_complete(self, category: str, place: str, items=[], count=None):
         if not self.status_indicators:
             return
 
-        num_results = len(items)
+        num_results = len(items) if count is None else count
         citation_items = []
 
         for item in items:
@@ -879,9 +879,6 @@ class OsmEventEmitter:
         })
 
     async def emit_result_citation(self, thing):
-        if not self.status_indicators:
-            return
-
         converted = OsmUtils.create_citation_document(thing)
         if not converted:
             return
@@ -895,7 +892,7 @@ class OsmEventEmitter:
             "type": "source",
             "data": {
                 "document": [document],
-                "metadata": [{"source": source_name, "html": True }],
+                "metadata": [{"source": f"{source_name} ({thing.get('citation_id')})", "html": True }],
                 "source": {"name": website, "url": website},
             }
         })
@@ -2006,11 +2003,6 @@ class OsmSearcher:
         else:
             sort_method = "haversine distance"
 
-        # post-process to add sequential citation/source IDs, because
-        # web ui doesn't like arbitrary source IDs.
-        for id, thing in enumerate(things_nearby):
-            thing["citation_id"] = str(id + 1)
-
         return [things_nearby, sort_method]
 
 
@@ -2077,6 +2069,12 @@ class OsmSearcher:
             # actually have something.
             parser = OsmParser(place, things_nearby, category=category, include_raw_data=self.include_raw_data)
             search_results = parser.convert_and_validate_results(sort_message=sort_method)
+
+            # post-process to add sequential citation/source IDs, because
+            # web ui doesn't like arbitrary source IDs.
+            for id, thing in enumerate(search_results or []):
+                thing["citation_id"] = str(id + 1)
+
             if search_results:
                 result_instructions = self.get_result_instructions(tag_type_str, used_rel)
             else:
@@ -2088,8 +2086,11 @@ class OsmSearcher:
             }
 
             # emit citations for the actual results.
-            await self.events.search_complete(readable_category, place_display_name, things_nearby)
-            for thing in search_results:
+            await self.events.search_complete(
+                readable_category, place_display_name, things_nearby,
+                count=len(search_results or [])
+            )
+            for thing in search_results or []:
                 await self.events.emit_result_citation(thing)
 
             return { "place_display_name": place_display_name, "results": resp, "things": things_nearby }
