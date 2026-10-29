@@ -14,6 +14,14 @@ import re
 import requests
 import time
 
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+
+try:
+    import fcntl
+except ImportError:  # not on Linux/macOS: no cross-process lock
+    fcntl = None
+
 from fastapi.responses import HTMLResponse
 from pygments import highlight
 from pygments.lexers import JsonLexer
@@ -21,6 +29,7 @@ from pygments.formatters import HtmlFormatter
 
 import openrouteservice
 from openrouteservice.directions import directions as ors_directions
+from openrouteservice.distance_matrix import distance_matrix as ors_distance_matrix
 
 from urllib.parse import urljoin, urlparse
 from operator import itemgetter
@@ -744,6 +753,76 @@ def navigation_instructions(travel_type) -> str:
     )
 
 PUBLIC_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+# Overpass request pacing. The tool keeps no state between calls, so the
+# Retry-After deadline per host lives in the cache file, and a lock file
+# makes concurrent tool calls (and processes) send one request at a time.
+OVERPASS_LOCK_FILE = "/tmp/osm-overpass.lock"
+OVERPASS_MAX_WAIT = 15        # seconds; longer waits fail (or fall back)
+OVERPASS_DEFAULT_BACKOFF = 10 # seconds, for a 429 without Retry-After
+
+class OverpassBusy(Exception):
+    pass
+
+class OverpassLock:
+    def __enter__(self):
+        self.file = open(OVERPASS_LOCK_FILE, 'w')
+        if fcntl:
+            fcntl.flock(self.file, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if fcntl:
+            fcntl.flock(self.file, fcntl.LOCK_UN)
+        self.file.close()
+
+def parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Retry-After in seconds: either a number of seconds or an HTTP date."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return None
+
+def overpass_request(url: str, query: str, headers: dict, timeout: int) -> requests.Response:
+    """
+    Send one Overpass query, one request at a time across tool calls,
+    honoring Retry-After. A 429 (or a 503/504 with Retry-After) records
+    when the host may be asked again. Short waits are slept off and the
+    request is retried once; longer ones raise OverpassBusy.
+    """
+    host = api_host(url)
+    key = f"overpass_retry_after_{host}"
+
+    with OverpassLock():
+        response = None
+        for attempt in range(2):
+            wait = (OsmCache().get(key) or 0) - time.time()
+            if wait > OVERPASS_MAX_WAIT:
+                raise OverpassBusy(f"{host} is rate limiting: retry in {round(wait)}s")
+            if wait > 0:
+                print(f"[OSM] Waiting {round(wait)}s before asking {host} (Retry-After)")
+                time.sleep(wait)
+
+            response = requests.get(url, params={"data": query}, headers=headers, timeout=timeout)
+            retry_after = parse_retry_after(response.headers.get('Retry-After'))
+            limited = (response.status_code == 429
+                       or (response.status_code in (503, 504) and retry_after is not None))
+            if not limited:
+                return response
+
+            delay = retry_after if retry_after is not None else OVERPASS_DEFAULT_BACKOFF
+            OsmCache().set(key, time.time() + delay)
+            print(f"[OSM] {host} is rate limiting (HTTP {response.status_code}), "
+                  f"retry after {round(delay)}s")
+
+        return response
 
 def api_host(url: str) -> str:
     """Host of an API URL, for logging which instance a request goes to."""
@@ -1613,6 +1692,10 @@ class OrsRouter:
 
         self._client = self._instances[0][2] if self._instances else None
 
+        custom_only = len(self._instances) == 1 and valves.ors_instance is not None
+        self._fallback_hint = (" (public fallback is off: see fallback_to_public_instances)"
+                               if custom_only else "")
+
     def _fetch_profiles(self, base_url: str, api_key: str) -> Tuple[set, bool]:
         """
         Ask an ORS instance which profiles it serves. Returns the
@@ -1659,46 +1742,67 @@ class OrsRouter:
 
         return [mode for mode, profile in ORS_PROFILES.items() if profile in profiles]
 
-    def choose_mode(
-        self, distance: float, requested: Optional[str] = None
-    ) -> Optional[str]:
-        """
-        Pick the travel mode for a route. A requested mode is used only if
-        an instance serves it. Otherwise: walking for short distances
-        (bike, then car, if walking isn't available), car for longer ones
-        (bike if there's no car profile).
-        """
-        available = self.available_modes()
-        if requested:
-            return requested if requested in available else None
+    # Straight-line distances (km) where bike and car travel times are
+    # compared when no travel mode is requested. Longer trips go by car.
+    COMPARE_MAX_DISTANCE = 15.0
 
+    # Bike wins if it takes at most this many times as long as the car,
+    # by whether the area is bike-friendly (None: no street data).
+    BIKE_TIME_FACTOR = {True: 2.0, None: 1.5, False: 1.2}
+
+    def is_available(self, mode: str) -> bool:
+        """Whether any instance (incl. the public fallback) serves a mode."""
+        return mode in self.available_modes()
+
+    def local_modes(self) -> List[str]:
+        """
+        Modes the first instance (the custom one, if set) serves.
+        Automatic choices only use these, so the public fallback is used
+        for explicitly requested modes and for failures, not by default.
+        """
+        if not self._instances:
+            return []
+
+        base_url, api_key, _ = self._instances[0]
+        profiles = self._profiles(base_url, api_key)
+        return [mode for mode, profile in ORS_PROFILES.items() if profile in profiles]
+
+    def auto_modes(self, distance: float, bike_friendly: Optional[bool]) -> List[str]:
+        """
+        Candidate modes when none was requested, from the straight-line
+        distance (km) and the area's bike-friendliness (see OsmLocality).
+        Two candidates (car and bike) mean: compare travel times with
+        prefer_bike().
+        """
+        local = self.local_modes()
         if distance <= self.WALKING_DISTANCE:
-            preferred = ['walk', 'bike', 'car']
+            if 'walk' in local:
+                return ['walk']
+            order = ['car', 'bike'] if bike_friendly is False else ['bike', 'car']
+        elif distance <= self.COMPARE_MAX_DISTANCE and 'car' in local and 'bike' in local:
+            return ['car', 'bike']
         else:
-            preferred = ['car', 'bike']
+            order = ['car', 'bike']
 
-        return next((mode for mode in preferred if mode in available), None)
+        return [mode for mode in order if mode in local][:1]
+
+    def prefer_bike(
+        self, bike_minutes: float, car_minutes: float, bike_friendly: Optional[bool]
+    ) -> bool:
+        return bike_minutes <= car_minutes * self.BIKE_TIME_FACTOR[bike_friendly]
 
     def calculate_route(
-        self, from_thing: dict, to_thing: dict, mode: Optional[str] = None
+        self, from_thing: dict, to_thing: dict, mode: str
     ) -> Optional[Tuple[dict, str]]:
         """
-        Calculate route between A and B. Returns the route and the travel
-        mode used, if successful, or None if the route could not be
-        calculated, the mode isn't available, or ORS is not configured.
+        Calculate route between A and B by the given mode. Returns the
+        route and the mode, if successful, or None if the route could not
+        be calculated, the mode isn't available, or ORS is not configured.
         Each instance serving the mode is tried in turn, so a custom
         instance without data for the area falls back to the public one.
         Raises the last error if every instance failed with one.
         """
-        if not self._client:
-            return None
-
-        distance = to_thing.get('distance')
-        if distance is None:
-            distance = straight_line_distance(from_thing, to_thing)
-
-        mode = self.choose_mode(distance, mode)
-        if not mode:
+        if not self._client or not self.is_available(mode):
             return None
 
         coords = ((from_thing['lon'], from_thing['lat']),
@@ -1722,7 +1826,7 @@ class OrsRouter:
                 resp = ors_directions(client, coords, profile=profile,
                                       preference="fastest", units="km")
             except Exception as e:
-                print(f"[OSM] ORS error from {api_host(base_url)}: {e}")
+                print(f"[OSM] ORS error from {api_host(base_url)}: {e}{self._fallback_hint}")
                 error = e
                 continue
 
@@ -1730,25 +1834,111 @@ class OrsRouter:
             if len(routes) > 0:
                 self.cache.set(cache_key, routes[0])
                 return routes[0], mode
-            print(f"[OSM] No route from {api_host(base_url)}")
+            print(f"[OSM] No route from {api_host(base_url)}{self._fallback_hint}")
 
         if error:
             raise error
         return None
 
-    def calculate_distance(
-        self, from_thing: dict, to_thing: dict
-    ) -> Optional[float]:
+    def calculate_distances(
+        self, origin: dict, things: List[dict], bike_friendly: Optional[bool]
+    ) -> dict:
         """
-        Calculate navigation distance between A and B. Returns the
-        distance calculated, if successful, or None if the distance
-        could not be calculated, or if ORS is not configured.
+        Travel distances (km) from origin to each thing, keyed by thing id,
+        with the mode for each thing chosen like for navigation
+        (auto_modes, prefer_bike). Uses one ORS matrix request per mode
+        instead of one route per thing. Things without any route are left
+        out.
         """
-        if not self._client:
-            return None
+        if not self._client or not things:
+            return {}
 
-        result = self.calculate_route(from_thing, to_thing)
-        return result[0].get('summary', {}).get('distance', None) if result else None
+        candidates = {}
+        by_mode = {}
+        for thing in things:
+            distance = thing.get('distance')
+            if distance is None:
+                distance = straight_line_distance(origin, thing)
+            candidates[thing['id']] = self.auto_modes(distance, bike_friendly)
+            for mode in candidates[thing['id']]:
+                by_mode.setdefault(mode, []).append(thing)
+
+        found = {mode: self._matrix_for_mode(origin, group, mode)
+                 for mode, group in by_mode.items()}
+
+        distances = {}
+        for thing in things:
+            results = {mode: found[mode][thing['id']] for mode in candidates[thing['id']]
+                       if thing['id'] in found.get(mode, {})}
+            if 'car' in results and 'bike' in results:
+                bike_minutes, car_minutes = results['bike'][1] / 60.0, results['car'][1] / 60.0
+                mode = 'bike' if self.prefer_bike(bike_minutes, car_minutes, bike_friendly) else 'car'
+            elif results:
+                mode = next(iter(results))
+            else:
+                continue
+            distances[thing['id']] = results[mode][0]
+
+        return distances
+
+    def _matrix_for_mode(self, origin: dict, things: List[dict], mode: str) -> dict:
+        """
+        {thing id: (distance km, duration s)} for one mode. Things an
+        instance can't route are retried on the next one (fallback).
+        """
+        profile = ORS_PROFILES[mode]
+        results = {}
+        for base_url, api_key, client in self._instances:
+            if not things:
+                break
+            if profile not in self._profiles(base_url, api_key):
+                continue
+
+            print(f"[OSM] Distance matrix via ORS ({api_host(base_url)}), "
+                  f"profile {profile}, {len(things)} destinations")
+            try:
+                results.update(self._matrix_distances(client, origin, things, profile))
+            except Exception as e:
+                print(f"[OSM] ORS matrix error from {api_host(base_url)}: {e}{self._fallback_hint}")
+                continue
+
+            things = [thing for thing in things if thing['id'] not in results]
+
+        return results
+
+    @staticmethod
+    def _matrix_distances(client, origin: dict, things: List[dict], profile: str) -> dict:
+        """
+        One matrix request from origin to things: {thing id: (distance
+        km, duration s)}. ORS rejects the whole request if any destination
+        is outside its map ("Destination point(s) [i, ...] out of bounds",
+        0-based destination indices), so retry once without those.
+        """
+        for attempt in range(2):
+            locations = [[float(origin['lon']), float(origin['lat'])]]
+            locations += [[float(thing['lon']), float(thing['lat'])] for thing in things]
+            try:
+                resp = ors_distance_matrix(client, locations, profile=profile, sources=[0],
+                                           destinations=list(range(1, len(locations))),
+                                           metrics=['distance', 'duration'], units='km')
+            except Exception as e:
+                match = re.search(r"Destination point\(s\) \[([\d,\s]+)\]", str(e))
+                if attempt > 0 or not match:
+                    raise
+                bad = {int(index) for index in match.group(1).split(',')}
+                print(f"[OSM] {len(bad)} destination(s) outside the ORS map, retrying without them")
+                things = [thing for index, thing in enumerate(things) if index not in bad]
+                if not things:
+                    return {}
+                continue
+
+            distances = (resp.get('distances') or [[]])[0]
+            durations = (resp.get('durations') or [[]])[0]
+            return {thing['id']: (distance, duration)
+                    for thing, distance, duration in zip(things, distances, durations)
+                    if distance is not None and duration is not None}
+
+        return {}
 
 
 #####################################################
@@ -1758,6 +1948,8 @@ class OrsRouter:
 class OsmSearcher:
     def __init__(self, valves, user_valves, event_emitter):
         self.events = event_emitter
+        self.valves = valves
+        self.user_valves = user_valves
 
         # config settings
         self.nominatim_url = valves.nominatim_url
@@ -1931,7 +2123,7 @@ class OsmSearcher:
         query = f"[out:json][timeout:25];way[highway](around:1000,{lat},{lon});out count;"
         print(f"[OSM] Checking whether {api_host(url)} has data around {lat},{lon}")
         try:
-            response = requests.get(url, params={"data": query}, headers=headers, timeout=30)
+            response = overpass_request(url, query, headers, timeout=30)
             response.raise_for_status()
             elements = response.json().get('elements') or [{}]
             covered = int(elements[0].get('tags', {}).get('ways', 0)) > 0
@@ -1958,16 +2150,22 @@ class OsmSearcher:
         if self.fallback_to_public and self.overpass_turbo_url != PUBLIC_OVERPASS_URL:
             urls.append(PUBLIC_OVERPASS_URL)
 
+        if len(urls) == 1 and self.overpass_turbo_url != PUBLIC_OVERPASS_URL:
+            fallback_hint = " (public fallback is off: see fallback_to_public_instances)"
+        else:
+            fallback_hint = ""
+
         response, error = None, None
         for index, url in enumerate(urls):
             print(f"[OSM] Overpass query via {api_host(url)}")
             try:
-                response = requests.get(url, params={"data": query}, headers=headers, timeout=90)
+                response = overpass_request(url, query, headers, timeout=90)
                 if response.status_code == 200 and has_data(response.json()):
                     return response
-                print(f"[OSM] No data from {api_host(url)} (HTTP {response.status_code})")
+                print(f"[OSM] No data from {api_host(url)} (HTTP {response.status_code})"
+                      f"{fallback_hint}")
             except Exception as e:
-                print(f"[OSM] Overpass error from {api_host(url)}: {e}")
+                print(f"[OSM] Overpass error from {api_host(url)}: {e}{fallback_hint}")
                 error = e
                 continue
 
@@ -1990,35 +2188,53 @@ class OsmSearcher:
             'From': self.from_header
         }
 
-    def calculate_navigation_distance(self, start, destination) -> float:
-        """Calculate real distance from A to B, instead of Haversine."""
-        return self._ors.calculate_distance(start, destination)
-
     def add_nav_distance_to_things(self, origin, things_nearby: List[dict]) -> bool:
-        """Update distances to use ORS navigable distances, if ORS enabled."""
-        used_ors = False
+        """
+        Update distances to use ORS navigable distances, if ORS enabled.
+        The travel mode per thing is chosen like for navigation, from the
+        locality of the search origin and the distance. Uncached distances
+        are fetched in one matrix request per travel mode. Things without
+        a route get their straight-line distance (not cached), since
+        sorting needs a distance for every thing.
+        """
         cache = OsmCache()
+        cache_key = lambda thing: f"ors_{origin}_{thing['id']}"
+
+        nav_distances = {}
+        uncached = []
         for thing in things_nearby:
-            cache_key = f"ors_{origin}_{thing['id']}"
-            nav_distance = cache.get(cache_key)
-
-            if nav_distance:
+            cached = cache.get(cache_key(thing))
+            if cached:
                 print(f"[OSM] Got nav distance for {thing['id']} from cache!")
+                nav_distances[thing['id']] = cached
             else:
-                print(f"[OSM] Checking ORS for {thing['id']}")
-                try:
-                    nav_distance = self.calculate_navigation_distance(origin, thing)
-                except Exception as e:
-                    print(f"[OSM] Error querying ORS: {e}")
-                    print("[OSM] Falling back to regular distance due to ORS error!")
-                    nav_distance = thing['distance']
+                uncached.append(thing)
 
-            if nav_distance:
-                used_ors = True
-                cache.set(cache_key, nav_distance)
-                thing['nav_distance'] = round(nav_distance, 3)
+        if uncached:
+            try:
+                place = {'lat': origin['lat'], 'lon': origin['lon'],
+                         'display_name': None, 'address': {}}
+                locality = OsmLocality(self.valves, self.user_valves, self.events)
+                bike_friendly = locality.describe(place)['bike_friendly']
+                found = self._ors.calculate_distances(origin, uncached, bike_friendly)
+            except Exception as e:
+                print(f"[OSM] Error querying ORS: {e}")
+                found = {}
 
-        return used_ors
+            for thing in uncached:
+                if thing['id'] in found:
+                    cache.set(cache_key(thing), found[thing['id']])
+            nav_distances.update(found)
+
+        if not nav_distances:
+            return False
+
+        for thing in things_nearby:
+            if thing['id'] not in nav_distances:
+                print(f"[OSM] No route to {thing['id']}, using straight-line distance")
+            thing['nav_distance'] = round(nav_distances.get(thing['id'], thing['distance']), 3)
+
+        return True
 
     def get_result_instructions(self, tag_type_str: str, used_rel: bool) -> str:
         if self.detailed_instructions:
@@ -2621,14 +2837,6 @@ class OsmNavigator:
         self.user_valves = user_valves
         self.events = events
 
-    # Straight-line distances (km) where bike and car are compared.
-    # Shorter trips use the walking rules, longer ones go by car.
-    COMPARE_MAX_DISTANCE = 15.0
-
-    # Bike wins if it takes at most this many times as long as the car,
-    # by whether the trip is bike-friendly (None: no street data).
-    BIKE_TIME_FACTOR = {True: 2.0, None: 1.5, False: 1.2}
-
     @staticmethod
     def combined_bike_friendly(ends: List[dict]) -> Optional[bool]:
         """False if either end isn't bike-friendly, True if both are, else unknown."""
@@ -2654,26 +2862,38 @@ class OsmNavigator:
             "travel_time": f"{round(summary.get('duration', 0) / 60.0, 2)} minutes",
         }
 
+    @staticmethod
+    def describe_end(end: dict) -> str:
+        if end['bike_friendly'] is None:
+            verdict = "no street data, so bike-friendliness is unknown"
+        elif end['bike_friendly']:
+            verdict = "bike-friendly"
+        else:
+            verdict = "not especially bike-friendly"
+        return f"{end['settlement_name'] or end['place']}: {verdict}"
+
     def choose_route(
         self, router: OrsRouter, start: dict, destination: dict
     ) -> Tuple[Optional[Tuple[dict, str]], List[str], Optional[dict]]:
         """
-        Route with no travel mode requested. Between walking distance and
-        COMPARE_MAX_DISTANCE, compares bike and car travel times, and
-        favors the bike more in bike-friendly places (both ends). Returns
+        Route with no travel mode requested. The candidate modes come from
+        the locality of both ends and the distance (OrsRouter.auto_modes).
+        For car and bike, travel times are compared (prefer_bike). Returns
         the route and mode, the reasons for the choice, and a summary of
-        the other mode.
+        the other mode, if one was compared.
         """
         distance = straight_line_distance(start, destination)
-        compare = (OrsRouter.WALKING_DISTANCE < distance <= self.COMPARE_MAX_DISTANCE
-                   and {'car', 'bike'} <= set(router.available_modes()))
-
-        if not compare:
-            return router.calculate_route(start, destination), [], None
-
         locality = OsmLocality(self.valves, self.user_valves, self.events)
         ends = [locality.describe(start), locality.describe(destination)]
         bike_friendly = self.combined_bike_friendly(ends)
+
+        reasons = [self.describe_end(end) for end in ends]
+        reasons.append(f"{round(distance, 1)} km in a straight line")
+
+        candidates = router.auto_modes(distance, bike_friendly)
+        if len(candidates) < 2:
+            route = self.try_route(router, start, destination, candidates[0]) if candidates else None
+            return route, reasons, None
 
         car = self.try_route(router, start, destination, 'car')
         bike = self.try_route(router, start, destination, 'bike')
@@ -2682,28 +2902,20 @@ class OsmNavigator:
             # other, and say so.
             found = car or bike
             if not found:
-                return None, [], None
+                return None, reasons, None
             missing = 'bike' if found is car else 'car'
-            return found, [f"no {missing} route could be found for this trip"], None
+            return found, reasons + [f"no {missing} route could be found for this trip"], None
 
         car_minutes = car[0].get('summary', {}).get('duration', 0) / 60.0
         bike_minutes = bike[0].get('summary', {}).get('duration', 0) / 60.0
-        factor = self.BIKE_TIME_FACTOR[bike_friendly]
-        chosen, other = (bike, car) if bike_minutes <= car_minutes * factor else (car, bike)
+        if router.prefer_bike(bike_minutes, car_minutes, bike_friendly):
+            chosen, other = bike, car
+        else:
+            chosen, other = car, bike
 
-        def describe_end(end):
-            if end['bike_friendly'] is None:
-                verdict = "no street data, so bike-friendliness is unknown"
-            elif end['bike_friendly']:
-                verdict = "bike-friendly"
-            else:
-                verdict = "not especially bike-friendly"
-            return f"{end['settlement_name'] or end['place']}: {verdict}"
-
-        reasons = [describe_end(end) for end in ends]
         reasons.append(f"about {round(bike_minutes)} min by bike vs {round(car_minutes)} min by car")
-
         return chosen, reasons, self.route_summary(*other)
+
 
     async def navigate(
         self, start_place: str, destination_place: str,
@@ -3029,8 +3241,8 @@ class Tools:
         )
         fallback_to_public_instances: bool = Field(
             default=False,
-            description=("When a custom Overpass or ORS instance returns an error or no "
-                         "data (e.g. outside its map area), retry on the public instance. "
+            description=("Off by default. When a custom Overpass or ORS instance returns an "
+                         "error or no data (e.g. outside its map area), retry on the public instance. "
                          "ORS fallback uses ors_fallback_api_key, or ors_api_key if that's empty.")
         )
         ors_fallback_api_key: Optional[str] = Field(

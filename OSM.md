@@ -74,9 +74,11 @@ _No testing is currently done with ollama._
      - 🚲 Cycling routes
      - 🚗 Driving navigation
    - Ask for a specific travel mode ("by bike", "walking"), or let the tool
-     choose: walking up to 1.5 km; between 1.5 and 15 km it compares bike
-     and car travel times, favoring the bike in places with lots of
-     separated cycle paths; car beyond that.
+     choose from the locality and distance: walking up to 1.5 km (bike or
+     car if your ORS has no walking profile, depending on the area);
+     between 1.5 and 15 km it compares bike and car travel times, favoring
+     the bike in places with lots of separated cycle paths; car beyond
+     that. Distances for nearby results are chosen the same way.
 
 5. **Locality info**
    - What a place is like for getting around: country, city/town/village,
@@ -108,6 +110,14 @@ _No testing is currently done with ollama._
 - **ORS Instance**:
   - Default: Public ORS instance (`https://api.openrouteservice.org`).
   - Can be changed to a custom ORS instance if self-hosted.
+- **Fallback to Public Instances** (**off by default**):
+  - For self-hosted Overpass or ORS instances that only cover part of the
+    world. When on, requests your instance can't answer (errors, or no data
+    outside its map area) are retried on the public instance.
+  - With it off, the tool log says so whenever a fallback would have been
+    tried: `(public fallback is off: see fallback_to_public_instances)`.
+- **ORS Fallback API Key**: key for the public ORS when falling back. If
+  empty, the regular ORS API key is used.
 
 ---
 

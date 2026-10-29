@@ -12,25 +12,32 @@
 **4.2.0:**
  - Navigation takes an optional travel mode: `car`, `bike` or `walk`. The
    model should only set it when the user asks for a specific way of
-   traveling. Without it, the mode is chosen by distance: walking up to
-   1.5 km (bike, then car, if walking isn't available), car beyond that
-   (bike if there's no car profile).
+   traveling.
+ - Without a travel mode, the mode always comes from the locality (see
+   `find_locality_info`) and the straight-line distance. This applies to
+   navigation (locality of both ends) and to distances for nearby results
+   (locality of the search location, checked once per search):
+   - Up to 1.5 km: walking if the ORS instance has it, otherwise bike, or
+     car if the area isn't bike-friendly.
+   - 1.5 to 15 km: bike and car travel times are compared. Bike wins if it
+     takes at most 2× as long as the car in bike-friendly areas, 1.2× if
+     either end isn't, and 1.5× when there's no street data.
+   - Over 15 km: car.
+   - Automatic choices only use modes the configured (custom) ORS instance
+     has. The public fallback is used for explicitly requested modes and
+     for failures, so short trips don't go to the public ORS for walking.
  - The tool asks the ORS instance which profiles it serves (`/v2/status`)
    and caches the answer per ORS URL for an hour. Instances without a
    status endpoint, such as the public ORS, are assumed to serve all three.
    If a requested mode isn't available, the model is told which ones are.
  - Route cache keys include the travel mode, so a cached car route is no
    longer returned for a bike request.
- - Navigation between two places picks the mode from the distance between
-   them. Previously it always used the car profile.
- - Between 1.5 and 15 km (straight line), automatic navigation compares
-   bike and car: bike wins if it takes at most 2× as long as the car where
-   both ends are bike-friendly, 1.2× if either end isn't, and 1.5× when
-   there's no street data. The result says why, and includes the other
-   mode's distance and time. If only one mode has a route, that one is
-   used. If neither does, the model is told the routing service may not
-   cover the area.
- - New valves `fallback_to_public_instances` (default off) and
+ - Navigation between two places no longer always uses the car profile.
+   The result says why a mode was chosen and, when bike and car were
+   compared, includes the other mode's distance and time. If only one mode
+   has a route, that one is used. If neither does, the model is told the
+   routing service may not cover the area.
+ - New valves `fallback_to_public_instances` (**off by default**) and
    `ors_fallback_api_key`. With a custom Overpass or ORS instance, a request
    that errors or returns nothing (e.g. outside the instance's map area)
    is retried on the public instance. For Overpass, an empty result only
@@ -39,8 +46,8 @@
    its map, "nothing found" is a real answer and the public instance
    isn't contacted. ORS fallback uses `ors_fallback_api_key`, or
    `ors_api_key` if that's empty. Modes the custom instance lacks (e.g.
-   walking) are served by the public ORS. Self-hosted instances are
-   assumed to have gaps.
+   walking) are served by the public ORS when explicitly requested.
+   Self-hosted instances are assumed to have gaps.
  - New tool `find_locality_info`: what a place is like for getting around
    (country, city/town/village/hamlet, road density, one-way streets,
    cycling infrastructure within 1.5 km), from Nominatim and one Overpass
@@ -49,6 +56,20 @@
    towns. Street stats are cached for 90 days on a ~100 m grid. Places the
    Overpass instance has no roads for are reported as having no street
    data, and not cached.
+ - Travel distances for nearby results use the ORS matrix endpoint: one
+   request per travel mode instead of one route per result (two when bike
+   and car are compared). Destinations
+   outside the ORS map are dropped and the request retried, instead of
+   failing the whole batch. Results without a route keep their
+   straight-line distance, which is no longer cached as a travel distance.
+ - Overpass requests (any instance) are sent one at a time across tool
+   calls and processes, using a lock file (`/tmp/osm-overpass.lock`).
+ - Overpass Retry-After is honored. A 429, or a 503/504 with Retry-After,
+   stores when the host may be asked again in the cache file, since the
+   tool keeps no state between calls. Waits up to 15 s are slept off and
+   the request retried once. Longer waits fail immediately without a
+   request, or fall back to the public instance. A 429 without
+   Retry-After waits 10 s.
  - Log lines show which Nominatim, Overpass and ORS host each request goes to.
  - Fix the cache losing entries: each cache object wrote its own snapshot
    over the whole file, so entries saved by others during the same tool
