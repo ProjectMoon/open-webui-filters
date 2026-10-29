@@ -18,6 +18,8 @@
    kept for 7 days); `show_route_map` only takes that ID, so the model
    must navigate first, and the map shows exactly the route it reported.
    Drawn from the route geometry ORS already returns: no extra requests.
+ - **Breaking:** `show_map` is renamed to `show_poi_map`, so it pairs with
+   `show_route_map` and isn't mistaken for a general map tool.
  - **Breaking:** fewer tools, 8 instead of 16 (about 30% less tool schema
    in every request). Update system prompts that name old tools.
    - `find_place` replaces `find_specific_place`, `find_address_for_coordinates`,
@@ -157,6 +159,9 @@
      checks after 30 days, Retry-After deadlines when the wait is over.
      Expired entries are deleted. The old cache kept everything forever
      and rewrote the whole file on every write.
+ - The `show_poi_map` map starts zoomed to fit all results again: Open WebUI
+   sizes the embed after the page loads, so the map now refits on resize
+   until you move it or pick a result.
 
 **4.1.9:**
  - Fix map not rendering (stuck in a scrollable box) when the model passes

@@ -356,15 +356,30 @@ MAP_UI = """
                  document.getElementById('poi-list').appendChild(listItem);
              });
 
-             if (poiData.length === 1) {
-                 map.setView(markers[0].getLatLng(), 15);
-             } else {
-                 map.fitBounds(L.latLngBounds(markers.map(marker => marker.getLatLng())), {
-                     padding: [32, 32], maxZoom: 15
-                 });
+             // OWUI sizes the iframe after the page loads, so the first fit
+             // is done at the wrong size. Refit on resize until the user
+             // moves the map or picks a result.
+             let userMoved = false;
+             function fitResults() {
+                 if (poiData.length === 1) {
+                     map.setView(markers[0].getLatLng(), 15);
+                 } else {
+                     map.fitBounds(L.latLngBounds(markers.map(marker => marker.getLatLng())), {
+                         padding: [32, 32], maxZoom: 15
+                     });
+                 }
+             }
+             fitResults();
+             map.on('dragstart popupopen', () => { userMoved = true; });
+             map.getContainer().addEventListener('wheel', () => { userMoved = true; }, { passive: true });
+             map.getContainer().querySelector('.leaflet-control-zoom')
+                 ?.addEventListener('click', () => { userMoved = true; });
+             function onResize() {
+                 map.invalidateSize({ pan: false });
+                 if (!userMoved) fitResults();
              }
 
-             return { map, markers };
+             return { map, markers, onResize };
          }
 
          // Function to focus on a specific marker
@@ -397,14 +412,14 @@ MAP_UI = """
          }
 
          if (poiData.length > 0) {
-             const { map, markers } = createMap(poiData);
+             const { map, markers, onResize } = createMap(poiData);
              map.whenReady(() => {
                  updateActiveListItem(0, markers);
                  scheduleHeightReport();
              });
              const mapResizeObserver = new ResizeObserver(() => {
                  requestAnimationFrame(() => {
-                     map.invalidateSize({ pan: false });
+                     onResize();
                      scheduleHeightReport();
                  });
              });
@@ -4175,10 +4190,12 @@ class Tools:
                               self.valves.tile_server)
         return HTMLResponse(content=page, headers={"Content-Disposition": "inline"}), SHOW_ROUTE_MAP_CONTEXT
 
-    def show_map(self, category: POICategory, results: List[OsmPOI]):
+    def show_poi_map(self, category: POICategory, results: List[OsmPOI]):
         """
         Shows a map for search results. Takes a list of Points of Interest that
-        were returned in a previous search function call. You **must** call another
+        were returned in a previous search function call (find_nearby, or the fuel/
+        charging and place of worship tools). For routes, use show_route_map instead.
+        You **must** call another
         function first to get information required for this function! Make sure to
         pass all necessary results into this function! When specifying descriptions,
         make sure they are short and useful, mentioning unique or important info
