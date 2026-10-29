@@ -2764,7 +2764,8 @@ class OsmSearcher:
             return []
 
 
-    async def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
+    async def nominatim_search(self, query, format="json", limit: int=1,
+                               quiet: bool=False) -> Optional[dict]:
         normalized_query = " ".join(query.lower().split())
         cache_key = f"nominatim_search_{limit}_{normalized_query}"
         cache = OsmCache()
@@ -2772,10 +2773,12 @@ class OsmSearcher:
 
         if data:
             print(f"[OSM] Got nominatim search data for {query} from cache!")
-            await self.events.resolving(done=True, message=query, items=data[:limit])
+            if not quiet:
+                await self.events.resolving(done=True, message=query, items=data[:limit])
             return data[:limit]
 
-        await self.events.resolving(done=False, message=query)
+        if not quiet:
+            await self.events.resolving(done=False, message=query)
 
         url = urljoin(self.nominatim_url, "search")
         print(f"[OSM] Searching Nominatim ({api_host(url)}) for: {query}")
@@ -2798,7 +2801,8 @@ class OsmSearcher:
             if not data:
                 raise ValueError(f"No results found for query '{query}'")
 
-            await self.events.resolving(done=True, message=query, items=data[:limit])
+            if not quiet:
+                await self.events.resolving(done=True, message=query, items=data[:limit])
 
             print(f"[OSM] Got result from Nominatim for: {query}")
             cache.set(cache_key, data[:limit], ttl=CACHE_TTL_PLACES)
@@ -3751,7 +3755,7 @@ async def resolve_setting(valves, user_valves, events, place: str,
 
     try:
         locality = OsmLocality(valves, user_valves, events)
-        result = await locality.searcher.nominatim_search(place, limit=1)
+        result = await locality.searcher.nominatim_search(place, limit=1, quiet=True)
         stats = (await asyncio.to_thread(locality.street_stats,
                                          float(result[0]['lat']), float(result[0]['lon']))
                  if result else None)

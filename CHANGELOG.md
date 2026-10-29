@@ -162,6 +162,8 @@
  - The `show_poi_map` map starts zoomed to fit all results again: Open WebUI
    sizes the embed after the page loads, so the map now refits on resize
    until you move it or pick a result.
+ - Searches no longer show "Resolution complete" twice when the tool works
+   out the urban setting itself.
 
 **4.1.9:**
  - Fix map not rendering (stuck in a scrollable box) when the model passes
