@@ -445,6 +445,7 @@ ROUTE_MAP_UI = """
          .route-marker.end span { background: #a63b00; }
          .step-detail { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
          .poi-item.active .step-detail { color: #fff; }
+         .route-steps-control a { font: bold 18px/26px 'Segoe UI', sans-serif; }
         </style>
     </head>
     <body>
@@ -513,10 +514,96 @@ ROUTE_MAP_UI = """
              }).addTo(map);
              endpointMarker(route.start, 'A', 'start').addTo(map);
              endpointMarker(route.end, 'B', 'end').addTo(map);
-             map.fitBounds(line.getBounds(), { padding: [32, 32], maxZoom: 17 });
 
              let highlight = null;
+             let current = -1;  // selected step, -1 for the whole route
+             let userMoved = false;
              const buttons = [];
+
+             function fitRoute(animate) {
+                 const options = { padding: [32, 32], maxZoom: 17 };
+                 if (animate) map.flyToBounds(line.getBounds(), options);
+                 else map.fitBounds(line.getBounds(), options);
+             }
+             fitRoute(false);
+
+             // Open WebUI sizes the embed only after the page reports its
+             // height, so the first fit is for a tiny map. Fit the whole route
+             // again on resizes, until the user pans, zooms, or picks a step.
+             map.on('dragstart', () => { userMoved = true; });
+             map.getContainer().addEventListener('wheel', () => { userMoved = true; }, { passive: true });
+             map.getContainer().querySelector('.leaflet-control-zoom')
+                 ?.addEventListener('click', () => { userMoved = true; });
+             function onResize() {
+                 map.invalidateSize({ pan: false });
+                 if (current < 0 && !userMoved) fitRoute(false);
+             }
+
+             function selectStep(index) {
+                 if (highlight) highlight.remove();
+                 highlight = null;
+                 current = index;
+
+                 if (index < 0) {
+                     userMoved = false;
+                     fitRoute(true);
+                 } else {
+                     const step = route.steps[index];
+                     const part = route.coordinates.slice(step.from, step.to + 1);
+                     highlight = L.polyline(part.length > 1 ? part : [part[0], part[0]], {
+                         color: '#a63b00', weight: 8, opacity: 0.9
+                     }).addTo(map);
+                     map.flyToBounds(highlight.getBounds(), { padding: [48, 48], maxZoom: 17 });
+                 }
+
+                 buttons.forEach((button, i) => {
+                     button.classList.toggle('active', i === index);
+                     button.setAttribute('aria-pressed', String(i === index));
+                 });
+                 if (index >= 0) {
+                     const item = buttons[index];
+                     const list = document.getElementById('poi-list');
+                     const itemBounds = item.getBoundingClientRect();
+                     const listBounds = list.getBoundingClientRect();
+                     if (itemBounds.top < listBounds.top) list.scrollTop -= listBounds.top - itemBounds.top;
+                     else if (itemBounds.bottom > listBounds.bottom) list.scrollTop += itemBounds.bottom - listBounds.bottom;
+                 }
+                 stepControl.update();
+                 scheduleHeightReport();
+             }
+
+             // Previous step, whole route, next step: in the map panel.
+             const StepControl = L.Control.extend({
+                 options: { position: 'topleft' },
+                 onAdd() {
+                     const bar = L.DomUtil.create('div', 'leaflet-bar leaflet-control route-steps-control');
+                     const make = (label, title, onClick) => {
+                         const button = L.DomUtil.create('a', '', bar);
+                         button.href = '#';
+                         button.setAttribute('role', 'button');
+                         button.title = title;
+                         button.setAttribute('aria-label', title);
+                         button.textContent = label;
+                         L.DomEvent.on(button, 'click', (event) => {
+                             L.DomEvent.preventDefault(event);
+                             if (!button.classList.contains('leaflet-disabled')) onClick();
+                         });
+                         return button;
+                     };
+                     this.previous = make('‹', 'Previous step', () => selectStep(Math.max(current - 1, 0)));
+                     this.reset = make('⤢', 'Show the whole route', () => selectStep(-1));
+                     this.next = make('›', 'Next step', () => selectStep(Math.min(current + 1, route.steps.length - 1)));
+                     L.DomEvent.disableClickPropagation(bar);
+                     L.DomEvent.disableScrollPropagation(bar);
+                     return bar;
+                 },
+                 update() {
+                     this.previous.classList.toggle('leaflet-disabled', current <= 0);
+                     this.reset.classList.toggle('leaflet-disabled', current < 0);
+                     this.next.classList.toggle('leaflet-disabled', current >= route.steps.length - 1);
+                 }
+             });
+             const stepControl = new StepControl().addTo(map);
 
              route.steps.forEach((step, index) => {
                  const listItem = document.createElement('li');
@@ -537,37 +624,26 @@ ROUTE_MAP_UI = """
                      button.appendChild(detail);
                  }
 
-                 button.onclick = () => {
-                     const part = route.coordinates.slice(step.from, step.to + 1);
-                     if (highlight) highlight.remove();
-                     highlight = L.polyline(part.length > 1 ? part : [part[0], part[0]], {
-                         color: '#a63b00', weight: 8, opacity: 0.9
-                     }).addTo(map);
-                     map.flyToBounds(highlight.getBounds(), { padding: [48, 48], maxZoom: 17 });
-                     buttons.forEach((other, i) => {
-                         other.classList.toggle('active', i === index);
-                         other.setAttribute('aria-pressed', String(i === index));
-                     });
-                     scheduleHeightReport();
-                 };
+                 button.onclick = () => selectStep(index);
 
                  buttons.push(button);
                  listItem.appendChild(button);
                  document.getElementById('poi-list').appendChild(listItem);
              });
 
-             return map;
+             stepControl.update();
+             return { map, onResize };
          }
 
          document.getElementById('route-summary').textContent =
              `${formatDistance(route.distance_km)} · ${formatDuration(route.duration_min)} by ${route.mode} · Data from OpenStreetMap`;
 
          if (route.coordinates.length > 0) {
-             const map = createRouteMap(route);
+             const { map, onResize } = createRouteMap(route);
              map.whenReady(scheduleHeightReport);
              const mapResizeObserver = new ResizeObserver(() => {
                  requestAnimationFrame(() => {
-                     map.invalidateSize({ pan: false });
+                     onResize();
                      scheduleHeightReport();
                  });
              });

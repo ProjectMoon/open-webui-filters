@@ -13,7 +13,8 @@
  - New tool `show_route_map`: shows a route on a map, with the route line,
    start (A) and destination (B), distance and travel time, and the
    turn-by-turn directions. Clicking a direction highlights that part of
-   the route. `navigate_between_places` returns a `route_id` (the route is
+   the route. Buttons on the map step to the previous or next direction,
+   or back to the whole route. `navigate_between_places` returns a `route_id` (the route is
    kept for 7 days); `show_route_map` only takes that ID, so the model
    must navigate first, and the map shows exactly the route it reported.
    Drawn from the route geometry ORS already returns: no extra requests.
