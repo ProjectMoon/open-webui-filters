@@ -9,6 +9,45 @@
 
 # OpenStreetMap Tool
 
+**5.0.0:**
+ - **Breaking:** fewer tools, 7 instead of 16 (about 30% less tool schema
+   in every request). Update system prompts that name old tools.
+   - `find_place` replaces `find_specific_place`, `find_address_for_coordinates`,
+     `resolve_coordinates` and
+     `find_specific_named_business_or_landmark_near_coordinates`: one
+     lookup for addresses, landmarks, named businesses and coordinates,
+     with an optional `near` place or coordinates.
+   - `find_nearby` replaces the store, recreation, eatery, travel,
+     healthcare and education tools and `find_other_things_near_place`:
+     one `what` value from a flat list of 28 kinds of places
+     (`shop_groceries`, `food_cafe_or_bakery`, `health_dentist`, ...),
+     plus `other` with a free-text `what_else`. `other` now runs a
+     Nominatim text search ("bicycle shop near Utrecht") instead of
+     returning "not supported".
+   - Merged duplicates: `drugs` and `cannabis` (same tags) are
+     `shop_cannabis`; `hardware` and `diy` are `shop_hardware_or_diy`.
+   - Fuel/EV charging and places of worship keep their own tools.
+ - `setting` (urban/suburban/rural) is optional in all search tools. Left
+   empty, it comes from the road density around the place (the same
+   street stats as the locality info, cached): dense is urban, moderate is
+   suburban, sparse is rural. Urban if there's no street data.
+ - Fix Nominatim results cached per query text only: a 1-result lookup
+   cached first capped later 5-result lookups of the same text at 1 result.
+ - Overpass searches use `out center` instead of `out geom`: areas (ways
+   and relations) come back as one center point instead of their full
+   outline, which the tool threw away anyway. Same coordinates, up to ~3×
+   less data for area searches (parks: 1.2 MB → 0.4 MB, ~1 s faster).
+ - Areas mapped as relations (large parks, campuses, buildings with
+   courtyards) are now included in search results. They were silently
+   dropped before. Their Nominatim lookup type was also wrong (`route`
+   instead of `relation`).
+ - Nominatim cache keys ignore case and extra spaces, so "Station
+   Haarlem" and "station  haarlem" share an entry. The "Resolving
+   location" status only shows for real lookups, not cache hits.
+ - Fix nonsense distances in place lookups (`"distance": "unknown"`,
+   `"nav_distance": "a bit more than unknownkm"`). Results without a
+   distance now leave those fields out, and only say "unavailable".
+
 **4.2.0:**
  - Navigation takes an optional travel mode: `car`, `bike` or `walk`. The
    model should only set it when the user asks for a specific way of
@@ -23,11 +62,14 @@
      takes at most 2× as long as the car in bike-friendly areas, 1.2× if
      either end isn't, and 1.5× when there's no street data.
    - Over 15 km: car.
-   - Automatic choices only use modes the configured (custom) ORS instance
-     has. The public fallback is used for explicitly requested modes and
-     for failures, so short trips don't go to the public ORS for walking.
+   - A mode is available if the configured ORS instance has it, or else
+     the public fallback (if on). With fallback on and a custom instance
+     without walking, short trips (and nearby distances under 1.5 km) are
+     walked via the public ORS.
  - The tool asks the ORS instance which profiles it serves (`/v2/status`)
-   and caches the answer per ORS URL for an hour. Instances without a
+   and caches the answer per ORS URL for an hour, in the cache database
+   (Open WebUI reloads tool code, so an in-memory cache didn't last).
+   Instances without a
    status endpoint, such as the public ORS, are assumed to serve all three.
    If a requested mode isn't available, the model is told which ones are.
  - Route cache keys include the travel mode, so a cached car route is no
@@ -35,8 +77,11 @@
  - Navigation between two places no longer always uses the car profile.
    The result says why a mode was chosen and, when bike and car were
    compared, includes the other mode's distance and time. If only one mode
-   has a route, that one is used. If neither does, the model is told the
-   routing service may not cover the area.
+   has a route, that one is used. If neither does, the model is told why,
+   from the ORS error: area not covered, request refused (no access or
+   usage limit), route too long, or service not responding. ORS rate
+   limits (429) are reported right away, instead of the client retrying
+   for up to 60 s.
  - New valves `fallback_to_public_instances` (**off by default**) and
    `ors_fallback_api_key`. With a custom Overpass or ORS instance, a request
    that errors or returns nothing (e.g. outside the instance's map area)
@@ -45,17 +90,35 @@
    search location (checked once per ~1 km area, cached 30 days): inside
    its map, "nothing found" is a real answer and the public instance
    isn't contacted. ORS fallback uses `ors_fallback_api_key`, or
-   `ors_api_key` if that's empty. Modes the custom instance lacks (e.g.
-   walking) are served by the public ORS when explicitly requested.
-   Self-hosted instances are assumed to have gaps.
+   `ors_api_key` if that's empty. Per travel mode: the custom instance if
+   it has the mode, else the public ORS (e.g. walking). Self-hosted
+   instances are assumed to have gaps.
  - New tool `find_locality_info`: what a place is like for getting around
    (country, city/town/village/hamlet, road density, one-way streets,
-   cycling infrastructure within 1.5 km), from Nominatim and one Overpass
-   count query. Bike-friendly means at least 15 separated cycle paths per
-   100 roads. Painted lanes don't count: US suburbs have as many as Dutch
-   towns. Street stats are cached for 90 days on a ~100 m grid. Places the
-   Overpass instance has no roads for are reported as having no street
-   data, and not cached.
+   cycling infrastructure, calm streets within 1.5 km), from Nominatim and
+   one Overpass query that measures lengths. Street stats are cached for
+   90 days on a ~100 m grid. Places the Overpass instance has no roads for
+   are reported as having no street data, and not cached.
+ - Bike-friendliness is yes, partly or no, from two measurements and no
+   country rules. Calibrated on 17 places in NL, DK, DE, BE, FR, the UK
+   and the US:
+   - Cycling infrastructure, as a share of road length: dedicated
+     cycleways, cycle tracks along roads, and `path`/`footway` with
+     `bicycle=designated` (the usual German tagging), plus half of paths
+     shared with pedestrians (`foot=designated`). Painted lanes don't
+     count: US suburbs have as many as Dutch towns.
+   - Calm streets: the share of streets with a mapped speed limit that are
+     30 km/h (20 mph) or less, or living or cycle streets. Only judged
+     when speed limits are mapped on at least half of the roads, since
+     unmapped limits follow a legal default that differs by country.
+   - Yes: infrastructure ≥ 30%, or ≥ 15% with calm streets ≥ 30%, or calm
+     streets alone ≥ 60%. Partly: infrastructure ≥ 15% without evidence of
+     calm streets. No: otherwise. Partly counts as in-between when bike
+     and car are compared.
+   - Results: the Dutch places, Copenhagen, Münster, Gent, Paris, Boulder
+     and Portland are bike-friendly; Germantown MD, Manhattan, Milton
+     Keynes and Davis are partly; Gilbert AZ and Katy TX are not. Davis is
+     a known miss: its strength is painted lanes.
  - Travel distances for nearby results use the ORS matrix endpoint: one
    request per travel mode instead of one route per result (two when bike
    and car are compared). Destinations
@@ -63,18 +126,29 @@
    failing the whole batch. Results without a route keep their
    straight-line distance, which is no longer cached as a travel distance.
  - Overpass requests (any instance) are sent one at a time across tool
-   calls and processes, using a lock file (`/tmp/osm-overpass.lock`).
+   calls and processes, using a lock file (`osm-overpass.lock` in the
+   temp directory).
  - Overpass Retry-After is honored. A 429, or a 503/504 with Retry-After,
-   stores when the host may be asked again in the cache file, since the
+   stores when the host may be asked again in the cache, since the
    tool keeps no state between calls. Waits up to 15 s are slept off and
    the request retried once. Longer waits fail immediately without a
    request, or fall back to the public instance. A 429 without
    Retry-After waits 10 s.
  - Log lines show which Nominatim, Overpass and ORS host each request goes to.
- - Fix the cache losing entries: each cache object wrote its own snapshot
-   over the whole file, so entries saved by others during the same tool
-   call were lost. It now re-reads the file before saving. An emptied
-   cache file no longer fails to load.
+ - The cache is now an SQLite database in Open WebUI's data directory
+   (`DATA_DIR/cache/osm_tool/cache.sqlite3`), so it survives restarts.
+   `DATA_DIR` comes from Open WebUI itself, so it also works outside
+   Docker (pip installs: `backend/data`). Without Open WebUI it falls back
+   to the `DATA_DIR` environment variable, then the temp directory. The
+   old `/tmp/osm.json` is no longer used and isn't migrated.
+   - Safe for simultaneous tool calls and processes. The old JSON file
+     lost entries: each cache object wrote its own snapshot over the
+     whole file.
+   - Entries expire: routes and travel distances after 30 days, Nominatim
+     results after 90 days, street stats after 90 days, Overpass coverage
+     checks after 30 days, Retry-After deadlines when the wait is over.
+     Expired entries are deleted. The old cache kept everything forever
+     and rewrote the whole file on every write.
 
 **4.1.9:**
  - Fix map not rendering (stuck in a scrollable box) when the model passes

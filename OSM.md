@@ -66,6 +66,13 @@ _No testing is currently done with ollama._
      - 🚶‍♂️ Recreation (parks, playgrounds, sports facilities)
      - 🚇 Public transport (bus stops, train stations)
      - 🏥 Hospitals, clinics, doctors
+   - One tool (`find_nearby`) covers all of these with a single `what`
+     value, such as `shop_groceries` or `health_dentist`. For anything
+     else, `what='other'` with a short description runs a general text
+     search. Fuel/EV charging and places of worship have their own tools.
+   - The search radius depends on how built-up the area is (urban,
+     suburban or rural), worked out from the road density around the
+     place unless the model specifies it.
 
 4. **Navigation**
    - Uses **OpenRouteService (ORS)** to calculate routes (requires API key).
@@ -74,8 +81,9 @@ _No testing is currently done with ollama._
      - 🚲 Cycling routes
      - 🚗 Driving navigation
    - Ask for a specific travel mode ("by bike", "walking"), or let the tool
-     choose from the locality and distance: walking up to 1.5 km (bike or
-     car if your ORS has no walking profile, depending on the area);
+     choose from the locality and distance: walking up to 1.5 km (via the
+     public ORS if fallback is on and your ORS has no walking profile;
+     otherwise bike or car, depending on the area);
      between 1.5 and 15 km it compares bike and car travel times, favoring
      the bike in places with lots of separated cycle paths; car beyond
      that. Distances for nearby results are chosen the same way.

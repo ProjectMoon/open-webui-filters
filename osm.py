@@ -2,17 +2,23 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 4.2.0
+version: 5.0.0
 license: AGPL-3.0+
 required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
 """
+import asyncio
 import itertools
 import json
 import math
+import os
 import re
 import requests
+import sqlite3
+import tempfile
 import time
+
+from contextlib import contextmanager
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -414,33 +420,6 @@ MAP_UI = """
 
 UrbanSetting: TypeAlias = Literal['urban', 'suburban', 'rural']
 
-StoreCategory: TypeAlias = Literal[
-    'groceries', 'convenience', 'alcohol', 'drugs',
-    'cannabis', 'electronics', 'electrical', 'hardware', 'diy'
-]
-
-RecreationCategory: TypeAlias = Literal[
-    'swimming', 'playgrounds', 'amusement', 'sports', 'gyms'
-]
-
-EateryCategory: TypeAlias = Literal[
-    'sit_down_restaurants', 'fast_food', 'cafe_or_bakery',
-    'bars_and_pubs'
-]
-
-TravelCategory: TypeAlias = Literal[
-    'tourist_attractions', 'accommodation', 'bike_rentals',
-    'car_rentals', 'public_transport'
-]
-
-HealthcareCategory: TypeAlias = Literal[
-    'doctor', 'dentist', 'hospital', 'pharmacy'
-]
-
-EducationCategory: TypeAlias = Literal[
-    'schools', 'universities_and_colleges', 'libraries'
-]
-
 TravelMode: TypeAlias = Literal['car', 'bike', 'walk']
 
 # ORS profile and display name for each travel mode.
@@ -595,7 +574,7 @@ HIGHLIGHT_CSS = HtmlFormatter().get_style_defs('.highlight')
 
 NOMINATIM_LOOKUP_TYPES = {
     "node": "N",
-    "route": "R",
+    "relation": "R",
     "way": "W"
 }
 
@@ -629,12 +608,50 @@ NO_RESULTS = {
                      "found no results.")
     }
 
-NO_ROUTE = {
-    "results": [],
-    "instructions": ("No route could be found. Tell the user that the routing "
-                     "service found no route, possibly because it doesn't cover "
-                     "this area. Do not make up a route or travel times.")
+# Why ORS found no route, and what the model should tell the user.
+ORS_FAILURE_INSTRUCTIONS = {
+    'not_covered': ("No route could be found. Tell the user that the routing "
+                    "service found no route, possibly because it doesn't cover "
+                    "this area."),
+    'refused': ("The routing service refused the request (no access, or its "
+                "usage limit is reached). Tell the user that routing is "
+                "unavailable right now."),
+    'too_far': ("The route is longer than the routing service allows. Tell "
+                "the user the trip is too long to route."),
+    'unavailable': ("The routing service didn't respond. Tell the user that "
+                    "routing is unavailable right now, and to try again later."),
+    'error': ("The routing service returned an error. Tell the user that "
+              "routing failed."),
+}
+
+def no_route(failure: Optional[str]) -> dict:
+    instructions = ORS_FAILURE_INSTRUCTIONS.get(failure or 'not_covered',
+                                                ORS_FAILURE_INSTRUCTIONS['error'])
+    return {
+        "results": [],
+        "instructions": f"{instructions} Do not make up a route or travel times."
     }
+
+def ors_failure_kind(error: Exception) -> str:
+    """Group an ORS error into a key of ORS_FAILURE_INSTRUCTIONS."""
+    if isinstance(error, openrouteservice.exceptions.ApiError):
+        body = error.message if isinstance(error.message, dict) else {}
+        details = body.get('error') if isinstance(body.get('error'), dict) else {}
+        code = details.get('code')
+        if error.status in (401, 403, 429):
+            return 'refused'
+        if code == 2004:
+            return 'too_far'
+        if error.status == 404 or code in (2009, 2010, 6010):
+            return 'not_covered'
+        if error.status >= 500:
+            return 'unavailable'
+        return 'error'
+    if isinstance(error, (openrouteservice.exceptions.Timeout,
+                          openrouteservice.exceptions.HTTPError,
+                          requests.exceptions.RequestException)):
+        return 'unavailable'
+    return 'error'
 
 NO_RESULTS_BAD_ADDRESS = {
     "results": [],
@@ -757,7 +774,7 @@ PUBLIC_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # Overpass request pacing. The tool keeps no state between calls, so the
 # Retry-After deadline per host lives in the cache file, and a lock file
 # makes concurrent tool calls (and processes) send one request at a time.
-OVERPASS_LOCK_FILE = "/tmp/osm-overpass.lock"
+OVERPASS_LOCK_FILE = os.path.join(tempfile.gettempdir(), "osm-overpass.lock")
 OVERPASS_MAX_WAIT = 15        # seconds; longer waits fail (or fall back)
 OVERPASS_DEFAULT_BACKOFF = 10 # seconds, for a 429 without Retry-After
 
@@ -818,7 +835,7 @@ def overpass_request(url: str, query: str, headers: dict, timeout: int) -> reque
                 return response
 
             delay = retry_after if retry_after is not None else OVERPASS_DEFAULT_BACKOFF
-            OsmCache().set(key, time.time() + delay)
+            OsmCache().set(key, time.time() + delay, ttl=delay)
             print(f"[OSM] {host} is rate limiting (HTTP {response.status_code}), "
                   f"retry after {round(delay)}s")
 
@@ -839,8 +856,8 @@ def locality_instructions() -> str:
     return (
         "This describes the area around the requested place, within 1.5 km. "
         "Use it to answer the user's question about the place or about getting "
-        "around there. The numbers are counts of road and path segments mapped "
-        "in OpenStreetMap: treat them as rough indications, not exact figures, "
+        "around there. The numbers are shares of road length mapped in "
+        "OpenStreetMap: treat them as rough indications, not exact figures, "
         "and don't list raw numbers unless the user asks for them."
     )
 
@@ -1499,14 +1516,15 @@ class OsmParser:
             tags, "operator:website", "website", "brand:website"
         )
 
-        # use the navigation distance if it's present. but if not, set to
-        # the haversine distance so that we at least get coherent results
-        # for LLM.
-        friendly_thing['distance'] = "{:.3f}".format(distance) if distance else "unknown"
-        if nav_distance:
-            friendly_thing['nav_distance'] = "{:.3f}".format(nav_distance) + " km"
-        else:
-            friendly_thing['nav_distance'] = f"a bit more than {friendly_thing['distance']}km"
+        # Distances only exist for searches around a place, not for direct
+        # lookups (find_place); leave them out then. Without a travel
+        # distance, the straight-line one is a lower bound for it.
+        if distance is not None:
+            friendly_thing['distance'] = "{:.3f}".format(distance)
+            if nav_distance is not None:
+                friendly_thing['nav_distance'] = "{:.3f}".format(nav_distance) + " km"
+            else:
+                friendly_thing['nav_distance'] = f"a bit more than {friendly_thing['distance']} km"
 
         if brand:
             friendly_thing['brand'] = brand
@@ -1558,12 +1576,13 @@ class OsmParser:
 
             map_link = OsmUtils.create_osm_link(friendly_thing['lat'], friendly_thing['lon'])
 
+            has_distance = use_distance and 'distance' in friendly_thing
             hv_distance_json = (f"{friendly_thing['distance']} km"
-                                if use_distance
+                                if has_distance
                                 else "unavailable")
 
             trv_distance_json = (f"{friendly_thing['nav_distance']}"
-                                 if use_distance and 'nav_distance' in friendly_thing
+                                 if has_distance
                                  else "unavailable")
 
             # prepare friendly thing for final result entry. some
@@ -1595,53 +1614,92 @@ class OsmParser:
 # Caching of OSM Data
 #####################################################
 
-class OsmCache:
-    def __init__(self, filename="/tmp/osm.json"):
-        self.filename = filename
-        self.data = self._load()
+# How long cached data stays valid.
+CACHE_TTL_ROUTES = 30 * 24 * 3600   # routes and travel distances (maps change)
+CACHE_TTL_PLACES = 90 * 24 * 3600   # Nominatim search and lookup results
 
-    def _load(self) -> dict:
+def osm_data_dir() -> str:
+    """
+    Persistent directory for the tool's data: Open WebUI's DATA_DIR (a
+    volume in Docker, backend/data in a pip install), else the DATA_DIR
+    environment variable, else the temp directory.
+    """
+    try:
+        from open_webui.env import DATA_DIR
+        base = str(DATA_DIR)
+    except Exception:
+        base = os.environ.get("DATA_DIR") or tempfile.gettempdir()
+
+    path = os.path.join(base, "cache", "osm_tool")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+class OsmCache:
+    """
+    Persistent key/value cache in SQLite, in Open WebUI's data directory.
+    Safe for concurrent tool calls and processes. Values are stored as
+    JSON. Entries can expire (ttl in seconds); expired ones are removed.
+    """
+    FILENAME = "cache.sqlite3"
+
+    def __init__(self, filename: Optional[str] = None):
+        self.filename = filename or os.path.join(osm_data_dir(), self.FILENAME)
+        with self._db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS cache ("
+                       "key TEXT PRIMARY KEY, value TEXT NOT NULL, expires_at REAL)")
+            db.execute("CREATE INDEX IF NOT EXISTS cache_expires_at ON cache (expires_at)")
+            db.execute("DELETE FROM cache WHERE expires_at < ?", (time.time(),))
+
+    @contextmanager
+    def _db(self):
+        db = sqlite3.connect(self.filename, timeout=30)
         try:
-            with open(self.filename, 'r') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
+            db.execute("PRAGMA journal_mode=WAL")
+            yield db
+            db.commit()
+        finally:
+            db.close()
 
     def get(self, key):
-        return self.data.get(key)
+        """The cached value, or None if missing or expired."""
+        with self._db() as db:
+            row = db.execute("SELECT value FROM cache WHERE key = ? "
+                             "AND (expires_at IS NULL OR expires_at > ?)",
+                             (key, time.time())).fetchone()
+        return json.loads(row[0]) if row else None
 
-    def set(self, key, value):
-        # Several caches are open at once during a tool call. Re-read the
-        # file first, or this would overwrite entries the others saved.
-        self.data = {**self._load(), **self.data, key: value}
-        with open(self.filename, 'w') as f:
-            json.dump(self.data, f)
+    def set(self, key, value, ttl: Optional[float] = None):
+        expires_at = time.time() + ttl if ttl is not None else None
+        with self._db() as db:
+            db.execute("INSERT OR REPLACE INTO cache (key, value, expires_at) VALUES (?, ?, ?)",
+                       (key, json.dumps(value), expires_at))
 
-    def get_or_set(self, key, func_to_call):
+    def delete(self, key):
+        with self._db() as db:
+            db.execute("DELETE FROM cache WHERE key = ?", (key,))
+
+    def get_or_set(self, key, func_to_call, ttl: Optional[float] = None):
         """
         Retrieve the value from the cache for a given key. If the key is not found,
         call `func_to_call` to generate the value and store it in the cache.
 
         :param key: The key to look up or set in the cache
         :param func_to_call: A callable function that returns the value if key is missing
+        :param ttl: Seconds until the stored value expires (None: never)
         :return: The cached or generated value
         """
-        if key not in self.data:
+        value = self.get(key)
+        if value is None:
             value = func_to_call()
-            self.set(key, value)
-        return self.data[key]
+            self.set(key, value, ttl)
+        return value
 
     def clear_cache(self):
         """
         Clear all entries from the cache.
         """
-        self.data.clear()
-        try:
-            # Erase contents of the cache file.
-            with open(self.filename, 'w'):
-                pass
-        except FileNotFoundError:
-            pass
+        with self._db() as db:
+            db.execute("DELETE FROM cache")
 
 
 #####################################################
@@ -1658,9 +1716,8 @@ class OrsRouter:
     # no travel mode is requested.
     WALKING_DISTANCE = 1.5
 
-    # Available profiles per ORS URL: {url: (fetched_at, profiles)}.
-    # Class-level because a new router is made for every tool call.
-    _profile_cache: dict = {}
+    # How long the profiles an ORS instance serves are cached. In the
+    # cache database, not in memory: Open WebUI reloads tool code.
     PROFILE_CACHE_SECONDS = 3600
 
     def __init__(
@@ -1676,7 +1733,8 @@ class OrsRouter:
             if valves.ors_instance is not None:
                 client = openrouteservice.Client(
                     base_url=valves.ors_instance,
-                    key=valves.ors_api_key
+                    key=valves.ors_api_key,
+                    retry_over_query_limit=False
                 )
                 self._instances.append((valves.ors_instance, valves.ors_api_key, client))
 
@@ -1684,10 +1742,10 @@ class OrsRouter:
                 # also be a real public ORS key).
                 fallback_key = getattr(valves, 'ors_fallback_api_key', None) or valves.ors_api_key
                 if getattr(valves, 'fallback_to_public_instances', False):
-                    client = openrouteservice.Client(key=fallback_key)
+                    client = openrouteservice.Client(key=fallback_key, retry_over_query_limit=False)
                     self._instances.append((self.PUBLIC_ORS_URL, fallback_key, client))
             else:
-                client = openrouteservice.Client(key=valves.ors_api_key)
+                client = openrouteservice.Client(key=valves.ors_api_key, retry_over_query_limit=False)
                 self._instances.append((self.PUBLIC_ORS_URL, valves.ors_api_key, client))
 
         self._client = self._instances[0][2] if self._instances else None
@@ -1725,13 +1783,14 @@ class OrsRouter:
             return set(self.DEFAULT_PROFILES), False
 
     def _profiles(self, base_url: str, api_key: str) -> set:
-        cached = OrsRouter._profile_cache.get(base_url)
-        if cached and time.time() - cached[0] < self.PROFILE_CACHE_SECONDS:
-            return cached[1]
+        cache_key = f"ors_profiles_{base_url}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return set(cached)
 
         profiles, cacheable = self._fetch_profiles(base_url, api_key)
         if cacheable:
-            OrsRouter._profile_cache[base_url] = (time.time(), profiles)
+            self.cache.set(cache_key, sorted(profiles), ttl=self.PROFILE_CACHE_SECONDS)
         return profiles
 
     def available_modes(self) -> List[str]:
@@ -1754,37 +1813,41 @@ class OrsRouter:
         """Whether any instance (incl. the public fallback) serves a mode."""
         return mode in self.available_modes()
 
-    def local_modes(self) -> List[str]:
-        """
-        Modes the first instance (the custom one, if set) serves.
-        Automatic choices only use these, so the public fallback is used
-        for explicitly requested modes and for failures, not by default.
-        """
-        if not self._instances:
-            return []
-
-        base_url, api_key, _ = self._instances[0]
-        profiles = self._profiles(base_url, api_key)
-        return [mode for mode, profile in ORS_PROFILES.items() if profile in profiles]
-
     def auto_modes(self, distance: float, bike_friendly: Optional[bool]) -> List[str]:
         """
         Candidate modes when none was requested, from the straight-line
         distance (km) and the area's bike-friendliness (see OsmLocality).
         Two candidates (car and bike) mean: compare travel times with
-        prefer_bike().
+        prefer_bike(). A mode counts as available if any instance serves
+        it: the custom one if it has it, else the public fallback (if on).
         """
-        local = self.local_modes()
+        available = self.available_modes()
         if distance <= self.WALKING_DISTANCE:
-            if 'walk' in local:
+            if 'walk' in available:
                 return ['walk']
             order = ['car', 'bike'] if bike_friendly is False else ['bike', 'car']
-        elif distance <= self.COMPARE_MAX_DISTANCE and 'car' in local and 'bike' in local:
+        elif distance <= self.COMPARE_MAX_DISTANCE and 'car' in available and 'bike' in available:
             return ['car', 'bike']
         else:
             order = ['car', 'bike']
 
-        return [mode for mode in order if mode in local][:1]
+        return [mode for mode in order if mode in available][:1]
+
+    def auto_mode_reason(
+        self, distance: float, mode: str, bike_friendly: Optional[bool]
+    ) -> str:
+        """Why auto_modes() picked a single mode, for the model to relay."""
+        name = TRAVEL_MODE_NAMES[mode]
+        if distance <= self.WALKING_DISTANCE:
+            if mode == 'walk':
+                return "short trip, within walking distance"
+            area = {True: "the area is bike-friendly",
+                    None: "the area is only partly bike-friendly (or there's no data)",
+                    False: "the area isn't especially bike-friendly"}[bike_friendly]
+            return f"short trip; walking routes aren't available and {area}, so {name}"
+        if distance > self.COMPARE_MAX_DISTANCE:
+            return f"long trip (over {round(self.COMPARE_MAX_DISTANCE)} km in a straight line), so {name}"
+        return f"only {name} routes are available"
 
     def prefer_bike(
         self, bike_minutes: float, car_minutes: float, bike_friendly: Optional[bool]
@@ -1832,7 +1895,7 @@ class OrsRouter:
 
             routes = resp.get('routes', [])
             if len(routes) > 0:
-                self.cache.set(cache_key, routes[0])
+                self.cache.set(cache_key, routes[0], ttl=CACHE_TTL_ROUTES)
                 return routes[0], mode
             print(f"[OSM] No route from {api_host(base_url)}{self._fallback_hint}")
 
@@ -1998,15 +2061,19 @@ class OsmSearcher:
     @staticmethod
     def process_way_result(way) -> Optional[dict]:
         """
-        Post-process an OSM Way dict to remove the geometry and node
-        info, and calculate a single GPS coordinate from its bounding
-        box.
+        Post-process an OSM way or relation (an area, like a park or a
+        building) into a single GPS coordinate: the center of its bounding
+        box, which Overpass returns for "out center". Drops geometry, node,
+        and member info. Also accepts "out geom" results (bounds).
         """
-        if 'nodes' in way:
-            del way['nodes']
+        for key in ('nodes', 'geometry', 'members'):
+            way.pop(key, None)
 
-        if 'geometry' in way:
-            del way['geometry']
+        if 'center' in way:
+            way['lat'] = way['center']['lat']
+            way['lon'] = way['center']['lon']
+            del way['center']
+            return way
 
         if 'bounds' in way:
             way_center = OsmUtils.get_bounding_box_center(way['bounds'])
@@ -2117,8 +2184,8 @@ class OsmSearcher:
         cache_key = f"overpass_coverage_{api_host(url)}_{round(lat, 2)}_{round(lon, 2)}"
         cache = OsmCache()
         cached = cache.get(cache_key)
-        if cached and time.time() - cached['fetched_at'] < self.COVERAGE_CACHE_SECONDS:
-            return cached['covered']
+        if cached is not None:
+            return cached
 
         query = f"[out:json][timeout:25];way[highway](around:1000,{lat},{lon});out count;"
         print(f"[OSM] Checking whether {api_host(url)} has data around {lat},{lon}")
@@ -2131,7 +2198,7 @@ class OsmSearcher:
             print(f"[OSM] Coverage check failed, assuming covered: {e}")
             return True
 
-        cache.set(cache_key, {'fetched_at': time.time(), 'covered': covered})
+        cache.set(cache_key, covered, ttl=self.COVERAGE_CACHE_SECONDS)
         return covered
 
     def overpass_get(
@@ -2223,7 +2290,7 @@ class OsmSearcher:
 
             for thing in uncached:
                 if thing['id'] in found:
-                    cache.set(cache_key(thing), found[thing['id']])
+                    cache.set(cache_key(thing), found[thing['id']], ttl=CACHE_TTL_ROUTES)
             nav_distances.update(found)
 
         if not nav_distances:
@@ -2327,7 +2394,7 @@ class OsmSearcher:
         if not headers:
             raise ValueError("Headers not set")
 
-        response = requests.get(url, params=params, headers=headers)
+        response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
         if response.status_code == 200:
             data = response.json()
 
@@ -2343,7 +2410,7 @@ class OsmSearcher:
                     updated = OsmSearcher.merge_from_nominatim(thing, nominatim_result)
                     if updated is not None:
                         lookup = to_lookup(thing)
-                        cache.set(lookup, updated)
+                        cache.set(lookup, updated, ttl=CACHE_TTL_PLACES)
                         updated_things.append(updated)
 
             return updated_things
@@ -2354,8 +2421,8 @@ class OsmSearcher:
 
 
     async def nominatim_search(self, query, format="json", limit: int=1) -> Optional[dict]:
-        await self.events.resolving(done=False, message=query)
-        cache_key = f"nominatim_search_{query}"
+        normalized_query = " ".join(query.lower().split())
+        cache_key = f"nominatim_search_{limit}_{normalized_query}"
         cache = OsmCache()
         data = cache.get(cache_key)
 
@@ -2363,6 +2430,8 @@ class OsmSearcher:
             print(f"[OSM] Got nominatim search data for {query} from cache!")
             await self.events.resolving(done=True, message=query, items=data[:limit])
             return data[:limit]
+
+        await self.events.resolving(done=False, message=query)
 
         url = urljoin(self.nominatim_url, "search")
         print(f"[OSM] Searching Nominatim ({api_host(url)}) for: {query}")
@@ -2378,7 +2447,7 @@ class OsmSearcher:
             await self.events.error("Headers not set")
             raise ValueError("Headers not set")
 
-        response = requests.get(url, params=params, headers=headers)
+        response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
         if response.status_code == 200:
             data = response.json()
 
@@ -2388,7 +2457,7 @@ class OsmSearcher:
             await self.events.resolving(done=True, message=query, items=data[:limit])
 
             print(f"[OSM] Got result from Nominatim for: {query}")
-            cache.set(cache_key, data[:limit])
+            cache.set(cache_key, data[:limit], ttl=CACHE_TTL_PLACES)
             return data[:limit]
         else:
             await self.events.error(Exception(response.text))
@@ -2444,18 +2513,18 @@ class OsmSearcher:
         if len(search) > 0:
             search += ";"
 
-        # "out geom;" is needed to get bounding box info of ways,
-        # so we can calculate the coordinates.
+        # "out center" gives ways and relations (areas) one coordinate,
+        # the center of their bounding box, without their full geometry.
         query = f"""
             [out:json];
             (
                 {search}
             );
-            out geom;
+            out center;
         """
 
         print(query)
-        response = self.overpass_get(query, headers, center=center)
+        response = await asyncio.to_thread(self.overpass_get, query, headers, center=center)
         if response.status_code == 200:
             # nodes have have exact GPS coordinates. we also include
             # useful way entries, post-processed to remove extra data
@@ -2476,7 +2545,7 @@ class OsmSearcher:
                         nodes.append(res)
                     else:
                         things_missing_names.append(res)
-                elif res['type'] == 'way':
+                elif res['type'] in ('way', 'relation'):
                     processed = OsmSearcher.process_way_result(res)
                     if processed is not None and OsmUtils.thing_has_info(res):
                         ways.append(processed)
@@ -2528,7 +2597,7 @@ class OsmSearcher:
         things_nearby = things_nearby[:limit] # drop down to requested limit
         things_nearby = OsmSearcher.sort_by_closeness(origin, things_nearby, 'distance')
 
-        if self.add_nav_distance_to_things(origin, things_nearby):
+        if await asyncio.to_thread(self.add_nav_distance_to_things, origin, things_nearby):
             sort_method = "travel distance"
             things_nearby = OsmSearcher.sort_by_closeness(origin, things_nearby, 'nav_distance', 'distance')
         else:
@@ -2685,12 +2754,29 @@ async def do_osm_search(
 class OsmLocality:
     """
     What a place is like for getting around: country, settlement type,
-    road density, one-way streets, and cycling infrastructure. Street
-    statistics are cached for a long time, since they rarely change.
+    road density, one-way streets, cycling infrastructure, and calm
+    streets. Street statistics are cached for a long time, since they
+    rarely change.
+
+    Bike-friendliness (see bike_friendliness) was calibrated on 17 places
+    in the Netherlands, Denmark, Germany, Belgium, France, the UK and the
+    US, measured by length within 1.5 km. It uses only these measurements,
+    no country rules.
     """
     RADIUS = 1500
     CACHE_SECONDS = 90 * 24 * 3600
     ROADS = "primary|secondary|tertiary|unclassified|residential|living_street"
+
+    # Bump when the stored street stats change shape, so old cache entries
+    # are no longer read (they expire on their own).
+    STATS_VERSION = 2
+
+    # Bike-friendliness thresholds, as shares of road length.
+    INFRA_YES = 0.30         # this much cycling infrastructure is enough on its own
+    INFRA_SOME = 0.15        # this much needs calm streets as well
+    CALM_WITH_INFRA = 0.30   # calm streets needed alongside INFRA_SOME
+    CALM_ALONE = 0.60        # calm streets enough on their own
+    SPEED_COVERAGE = 0.50    # speed limits must be mapped on this much to judge calm streets
 
     def __init__(self, valves, user_valves, events: OsmEventEmitter):
         self.searcher = OsmSearcher(valves, user_valves, events)
@@ -2699,33 +2785,50 @@ class OsmLocality:
     def _street_query(self, lat: float, lon: float) -> str:
         around = f"(around:{self.RADIUS},{lat},{lon})"
         side = '~"^cycleway(:both|:left|:right)?$"'
+        calm_speed = '"^([1-9]|[12][0-9]|30)$|^([1-9]|1[0-9]|20) mph$"'
+
+        def length(set_name: str, label: str) -> str:
+            return f"(.{set_name};); make {label} n=count(ways),km=sum(length())/1000; out;"
+
         return f"""
             [out:json][timeout:60];
             way[highway~"^({self.ROADS})$"]{around}->.roads;
-            (
-              way[highway=cycleway]{around};
-              way.roads[{side}~"^(track|opposite_track)$"];
-              way.roads[bicycle_road=yes];
-              way.roads[cyclestreet=yes];
-            )->.paths;
+            way[highway=cycleway]{around}->.cycleways;
+            way.cycleways[foot=designated][segregated!=yes]->.shared;
+            (way.cycleways; - way.shared;)->.dedicated;
+            way[highway~"^(footway|path)$"][bicycle=designated]{around}->.bike_paths;
+            way.roads[{side}~"^(track|opposite_track)$"]->.tracks;
             way.roads[{side}~"^(lane|opposite_lane)$"]->.lanes;
             way.roads[oneway~"^(yes|-1)$"]->.oneway;
-            .roads out count;
-            .paths out count;
-            .lanes out count;
-            .oneway out count;
+            way.roads[maxspeed~{calm_speed}]->.slow;
+            way.roads[highway=living_street]->.living;
+            way.roads[~"^(cyclestreet|bicycle_road)$"~"^yes$"]->.cyclestreets;
+            (way.slow; way.living; way.cyclestreets;)->.calm;
+            way.roads[maxspeed]->.speed_tagged;
+            (way.speed_tagged; way.living; way.cyclestreets;)->.speed_known;
+            {length('roads', 'roads')}
+            {length('dedicated', 'dedicated')}
+            {length('shared', 'shared')}
+            {length('bike_paths', 'bike_paths')}
+            {length('tracks', 'tracks')}
+            {length('lanes', 'lanes')}
+            {length('oneway', 'oneway')}
+            {length('calm', 'calm')}
+            {length('speed_known', 'speed_known')}
         """
 
     def street_stats(self, lat: float, lon: float) -> Optional[dict]:
         """
-        Counts of roads, separated cycle paths, painted cycle lanes and
-        one-way roads around a point. Separated paths are what set
-        cycling countries apart: painted lanes are common in US suburbs too.
+        Street statistics around a point, by length: road network,
+        cycling infrastructure (dedicated cycleways, cycle tracks along
+        roads, paths designated for bikes, paths shared with pedestrians),
+        painted lanes, one-way roads, and calm streets (30 km/h or less,
+        living streets, cycle streets).
         """
         # About a 100 m grid, so nearby lookups share an entry.
-        cache_key = f"locality_{round(lat, 3)}_{round(lon, 3)}_{self.RADIUS}"
+        cache_key = f"locality_v{self.STATS_VERSION}_{round(lat, 3)}_{round(lon, 3)}_{self.RADIUS}"
         cached = self.cache.get(cache_key)
-        if cached and time.time() - cached.get('fetched_at', 0) < self.CACHE_SECONDS:
+        if cached:
             print(f"[OSM] Got street stats for {lat},{lon} from cache!")
             return cached
 
@@ -2735,34 +2838,38 @@ class OsmLocality:
 
         print(f"[OSM] Getting street stats around {lat},{lon}")
         has_roads = lambda result: int(
-            (result.get('elements') or [{}])[0].get('tags', {}).get('ways', 0)) > 0
+            (result.get('elements') or [{}])[0].get('tags', {}).get('n', 0)) > 0
         response = self.searcher.overpass_get(self._street_query(lat, lon), headers, has_roads,
                                               center={'lat': lat, 'lon': lon})
         if response.status_code != 200:
             print(f"[OSM] Overpass error getting street stats: {response.text[:200]}")
             return None
 
-        counts = [int(element.get('tags', {}).get('ways', 0))
-                  for element in response.json().get('elements', [])]
-        if len(counts) != 4:
-            return None
-
-        roads, paths, lanes, oneway = counts
-        if roads == 0:
+        measured = {element['type']: element.get('tags', {})
+                    for element in response.json().get('elements', [])}
+        roads = int(measured.get('roads', {}).get('n', 0))
+        road_km = float(measured.get('roads', {}).get('km', 0))
+        if roads == 0 or road_km == 0:
             # Outside the Overpass instance's coverage (e.g. a regional
             # extract), not a place without roads. Don't cache it.
             print(f"[OSM] No roads found around {lat},{lon}: no street data there")
             return None
 
+        share = lambda name: round(float(measured.get(name, {}).get('km', 0)) / road_km, 3)
         stats = {
-            'fetched_at': time.time(),
             'roads': roads,
-            'cycle_path_share': round(paths / roads, 2),
-            'cycle_lane_share': round(lanes / roads, 2),
-            'one_way_share': round(oneway / roads, 2),
+            'road_km': round(road_km, 1),
+            'dedicated_share': share('dedicated'),
+            'shared_share': share('shared'),
+            'bike_path_share': share('bike_paths'),
+            'track_share': share('tracks'),
+            'lane_share': share('lanes'),
+            'one_way_share': share('oneway'),
+            'calm_share': share('calm'),
+            'speed_known_share': share('speed_known'),
         }
 
-        self.cache.set(cache_key, stats)
+        self.cache.set(cache_key, stats, ttl=self.CACHE_SECONDS)
         return stats
 
     @staticmethod
@@ -2777,6 +2884,41 @@ class OsmLocality:
         if value >= high:
             return labels[0]
         return labels[1] if value >= low else labels[2]
+
+    @staticmethod
+    def infrastructure_share(stats: dict) -> float:
+        """Cycling infrastructure as a share of road length; shared paths count half."""
+        return (stats['dedicated_share'] + stats['track_share'] + stats['bike_path_share']
+                + 0.5 * stats['shared_share'])
+
+    @classmethod
+    def calm_streets(cls, stats: dict) -> Optional[float]:
+        """
+        Share of streets with a known speed limit that are calm, or None if
+        too few speed limits are mapped to tell. Unmapped limits are left
+        out rather than guessed: the legal default differs by country.
+        """
+        if stats['speed_known_share'] < cls.SPEED_COVERAGE:
+            return None
+        return min(1.0, stats['calm_share'] / stats['speed_known_share'])
+
+    @classmethod
+    def bike_friendliness(cls, stats: dict) -> Tuple[str, Optional[bool]]:
+        """
+        'yes', 'some' or 'no', and the matching bike_friendly value
+        (True, None, False) used to weigh bike against car.
+        """
+        infra = cls.infrastructure_share(stats)
+        calm = cls.calm_streets(stats)
+        if infra >= cls.INFRA_YES:
+            verdict = 'yes'
+        elif infra >= cls.INFRA_SOME:
+            verdict = 'yes' if calm is not None and calm >= cls.CALM_WITH_INFRA else 'some'
+        elif calm is not None and calm >= cls.CALM_ALONE:
+            verdict = 'yes'
+        else:
+            verdict = 'no'
+        return verdict, {'yes': True, 'some': None, 'no': False}[verdict]
 
     def describe(self, thing: dict) -> dict:
         """Locality info for a Nominatim result."""
@@ -2798,31 +2940,48 @@ class OsmLocality:
             print(f"[OSM] Could not get street stats: {e}")
             stats = None
 
-        if stats:
-            roads = stats['roads']
-            paths = stats['cycle_path_share']
-            info.update({
-                'road_network': (f"{OsmLocality.level(roads, 900, 450, ('dense', 'moderate', 'sparse'))} "
-                                 f"({roads} road segments)"),
-                'one_way_streets': (f"{OsmLocality.level(stats['one_way_share'], 0.5, 0.25, ('many', 'some', 'few'))} "
-                                    f"({round(stats['one_way_share'] * 100)}% of roads)"),
-                'cycling_infrastructure': (
-                    f"{OsmLocality.level(paths, 0.15, 0.05, ('extensive', 'some', 'little'))} "
-                    f"(separated cycle paths: {round(paths * 100)} per 100 roads, "
-                    f"painted lanes on {round(stats['cycle_lane_share'] * 100)}% of roads)"
-                ),
-            })
-            info['bike_friendly'] = paths >= 0.15
-        else:
+        if not stats:
             # No street data (outside the Overpass instance's area, or an
             # error): unknown, so neither assume nor rule out cycling.
+            info['bike_friendliness'] = "unknown (no street data)"
             info['bike_friendly'] = None
+            return info
 
+        roads = stats['roads']
+        infra = OsmLocality.infrastructure_share(stats)
+        calm = OsmLocality.calm_streets(stats)
+        verdict, bike_friendly = OsmLocality.bike_friendliness(stats)
+        pct = lambda value: f"{round(value * 100)}%"
+        infra_level = OsmLocality.level(infra, OsmLocality.INFRA_YES, OsmLocality.INFRA_SOME,
+                                        ('extensive', 'moderate', 'little'))
+
+        info.update({
+            'road_network': (f"{OsmLocality.level(roads, 900, 450, ('dense', 'moderate', 'sparse'))} "
+                             f"({roads} road segments, {stats['road_km']} km)"),
+            'one_way_streets': (f"{OsmLocality.level(stats['one_way_share'], 0.5, 0.25, ('many', 'some', 'few'))} "
+                                f"({pct(stats['one_way_share'])} of road length)"),
+            'cycling_infrastructure': (
+                f"{infra_level} (cycle paths and tracks: {pct(infra)} of road length, "
+                f"of which paths shared with pedestrians {pct(stats['shared_share'])}; "
+                f"painted cycle lanes on {pct(stats['lane_share'])} of roads)"
+            ),
+            'calm_streets': (
+                f"{pct(calm)} of streets are 30 km/h (20 mph) or slower, living streets, or cycle streets"
+                if calm is not None else
+                f"unknown: speed limits are mapped on only {pct(stats['speed_known_share'])} of roads"
+            ),
+            'bike_friendliness': {
+                'yes': "bike-friendly",
+                'some': "partly: some cycling infrastructure, but no evidence of calm streets",
+                'no': "not especially bike-friendly",
+            }[verdict],
+            'bike_friendly': bike_friendly,
+        })
         return info
 
     async def for_place(self, place: str) -> Optional[dict]:
         result = await self.searcher.nominatim_search(place, limit=1)
-        return self.describe(result[0]) if result else None
+        return await asyncio.to_thread(self.describe, result[0]) if result else None
 
 
 #####################################################
@@ -2836,6 +2995,8 @@ class OsmNavigator:
         self.valves = valves
         self.user_valves = user_valves
         self.events = events
+        # Why the last route attempt failed (see try_route).
+        self.failure = None
 
     @staticmethod
     def combined_bike_friendly(ends: List[dict]) -> Optional[bool]:
@@ -2845,13 +3006,21 @@ class OsmNavigator:
             return False
         return True if all(values) else None
 
-    @staticmethod
-    def try_route(router: OrsRouter, start: dict, destination: dict, mode: str):
+    def try_route(self, router: OrsRouter, start: dict, destination: dict, mode: str):
+        """
+        The route and mode, or None. On failure, self.failure says why
+        (a key of ORS_FAILURE_INSTRUCTIONS) for the message to the model.
+        """
         try:
-            return router.calculate_route(start, destination, mode)
+            result = router.calculate_route(start, destination, mode)
         except Exception as e:
             print(f"[OSM] No {mode} route: {e}")
+            self.failure = ors_failure_kind(e)
             return None
+
+        if not result:
+            self.failure = 'not_covered'
+        return result
 
     @staticmethod
     def route_summary(route: dict, mode: str) -> dict:
@@ -2864,13 +3033,7 @@ class OsmNavigator:
 
     @staticmethod
     def describe_end(end: dict) -> str:
-        if end['bike_friendly'] is None:
-            verdict = "no street data, so bike-friendliness is unknown"
-        elif end['bike_friendly']:
-            verdict = "bike-friendly"
-        else:
-            verdict = "not especially bike-friendly"
-        return f"{end['settlement_name'] or end['place']}: {verdict}"
+        return f"{end['settlement_name'] or end['place']}: {end['bike_friendliness']}"
 
     def choose_route(
         self, router: OrsRouter, start: dict, destination: dict
@@ -2887,13 +3050,16 @@ class OsmNavigator:
         ends = [locality.describe(start), locality.describe(destination)]
         bike_friendly = self.combined_bike_friendly(ends)
 
-        reasons = [self.describe_end(end) for end in ends]
+        # Both ends are often in the same place: say it once.
+        reasons = list(dict.fromkeys(self.describe_end(end) for end in ends))
         reasons.append(f"{round(distance, 1)} km in a straight line")
 
         candidates = router.auto_modes(distance, bike_friendly)
         if len(candidates) < 2:
-            route = self.try_route(router, start, destination, candidates[0]) if candidates else None
-            return route, reasons, None
+            if not candidates:
+                return None, reasons, None
+            reasons.append(router.auto_mode_reason(distance, candidates[0], bike_friendly))
+            return self.try_route(router, start, destination, candidates[0]), reasons, None
 
         car = self.try_route(router, start, destination, 'car')
         bike = self.try_route(router, start, destination, 'bike')
@@ -2927,7 +3093,7 @@ class OsmNavigator:
 
         try:
             if travel_mode:
-                available = router.available_modes()
+                available = await asyncio.to_thread(router.available_modes)
                 if travel_mode not in available:
                     await self.events.navigating(done=True)
                     return unavailable_travel_mode(travel_mode, available)
@@ -2941,14 +3107,15 @@ class OsmNavigator:
 
             start, destination = start[0], destination[0]
             if travel_mode:
-                result = router.calculate_route(start, destination, travel_mode)
+                result = await asyncio.to_thread(self.try_route, router, start, destination, travel_mode)
                 reasons, alternative = [], None
             else:
-                result, reasons, alternative = self.choose_route(router, start, destination)
+                result, reasons, alternative = await asyncio.to_thread(
+                    self.choose_route, router, start, destination)
 
             if not result:
                 await self.events.navigating(done=True)
-                return NO_ROUTE
+                return no_route(self.failure)
 
             route, mode = result
             total_distance = round(route.get('summary', {}).get('distance', ''), 2)
@@ -3159,19 +3326,93 @@ def validate_category(category, allowed_categories):
     return None
 
 
-def validate_tags(category, tags, allowed_categories):
-    category_validation_error = validate_category(category, allowed_categories)
-    if category_validation_error:
-        return category_validation_error
+# What find_nearby can search for. Each value maps to the internal
+# category name used by the rest of the tool (tag lookup, raw data,
+# instructions), the function that turns it into OSM tags, and the base
+# search radius (m) and result limit.
+NearbyCategory: TypeAlias = Literal[
+    'shop_groceries', 'shop_convenience', 'shop_alcohol', 'shop_cannabis',
+    'shop_electronics', 'shop_electrical', 'shop_hardware_or_diy',
+    'food_restaurants', 'food_fast_food', 'food_cafe_or_bakery', 'food_bars_and_pubs',
+    'recreation_swimming', 'recreation_playgrounds', 'recreation_amusement',
+    'recreation_sports', 'recreation_gyms',
+    'travel_tourist_attractions', 'travel_accommodation', 'travel_bike_rentals',
+    'travel_car_rentals', 'travel_public_transport',
+    'health_doctor', 'health_dentist', 'health_hospital', 'health_pharmacy',
+    'education_schools', 'education_universities_and_colleges', 'education_libraries',
+    'other'
+]
 
-    if not tags:
-        return {
-            "results": [],
-            "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
-            "error_message": f"{category} translated to no searchable OSM tags."
-        }
+NEARBY_SEARCHES = {
+    'shop_groceries': ('groceries', store_category_to_tags, 4000, 5),
+    'shop_convenience': ('convenience', store_category_to_tags, 4000, 5),
+    'shop_alcohol': ('alcohol', store_category_to_tags, 4000, 5),
+    'shop_cannabis': ('cannabis', store_category_to_tags, 4000, 5),
+    'shop_electronics': ('electronics', store_category_to_tags, 4000, 5),
+    'shop_electrical': ('electrical', store_category_to_tags, 4000, 5),
+    'shop_hardware_or_diy': ('hardware', store_category_to_tags, 4000, 5),
+    'food_restaurants': ('sit_down_restaurants', food_category_to_tags, 4000, 10),
+    'food_fast_food': ('fast_food', food_category_to_tags, 4000, 10),
+    'food_cafe_or_bakery': ('cafe_or_bakery', food_category_to_tags, 4000, 10),
+    'food_bars_and_pubs': ('bars_and_pubs', food_category_to_tags, 4000, 10),
+    'recreation_swimming': ('swimming', recreation_to_tags, 10000, 5),
+    'recreation_playgrounds': ('playgrounds', recreation_to_tags, 4000, 10),
+    'recreation_amusement': ('amusement', recreation_to_tags, 10000, 10),
+    'recreation_sports': ('sports', recreation_to_tags, 10000, 10),
+    'recreation_gyms': ('gyms', recreation_to_tags, 4000, 5),
+    'travel_tourist_attractions': ('tourist_attractions', travel_category_to_tags, 10000, 10),
+    'travel_accommodation': ('accommodation', travel_category_to_tags, 10000, 5),
+    'travel_bike_rentals': ('bike_rentals', travel_category_to_tags, 4000, 5),
+    'travel_car_rentals': ('car_rentals', travel_category_to_tags, 6000, 5),
+    'travel_public_transport': ('public_transport', travel_category_to_tags, 4000, 10),
+    'health_doctor': ('doctor', healthcare_category_to_tags, 4000, 5),
+    'health_dentist': ('dentist', healthcare_category_to_tags, 4000, 5),
+    'health_hospital': ('hospital', healthcare_category_to_tags, 4000, 5),
+    'health_pharmacy': ('pharmacy', healthcare_category_to_tags, 4000, 5),
+    'education_schools': ('schools', education_category_to_tags, 4000, 5),
+    'education_universities_and_colleges': ('universities_and_colleges', education_category_to_tags, 4000, 5),
+    'education_libraries': ('libraries', education_category_to_tags, 4000, 5),
+}
 
-    return None
+def invalid_value(name: str, value, allowed) -> dict:
+    return {
+        "results": [],
+        "instructions": "There was an error. Attempt to correct the error, or inform the user (whichever is appropriate).",
+        "error_message": f"{value} is not a valid value for {name}. Must be one of: {', '.join(allowed)}"
+    }
+
+def other_search_instructions(what: str, place: str) -> str:
+    return (
+        f"These are results of a general text search for '{what}' near {place}. "
+        "This search is less precise than the category searches: results may "
+        "be incomplete, or not match what the user asked for. Only mention "
+        "results that match, and tell the user if none do. "
+        f"{NO_CITATION_LIST_PROHIBITION}"
+    )
+
+async def resolve_setting(valves, user_valves, events, place: str,
+                          setting: Optional[str]) -> str:
+    """
+    The urban setting for a search: the given one, or one derived from the
+    road density around the place (see OsmLocality). Urban if unknown.
+    """
+    if setting:
+        return normalize_setting(setting)
+
+    try:
+        locality = OsmLocality(valves, user_valves, events)
+        result = await locality.searcher.nominatim_search(place, limit=1)
+        stats = (await asyncio.to_thread(locality.street_stats,
+                                         float(result[0]['lat']), float(result[0]['lon']))
+                 if result else None)
+        if stats:
+            setting = OsmLocality.level(stats['roads'], 900, 450, ('urban', 'suburban', 'rural'))
+            print(f"[OSM] Setting for {place}: {setting} ({stats['roads']} roads nearby)")
+            return setting
+    except Exception as e:
+        print(f"[OSM] Could not determine the setting for {place}: {e}")
+
+    return 'urban'
 
 
 # EV charger mappings, moved out of original function for readability.
@@ -3277,65 +3518,30 @@ class Tools:
         self.valves = self.Valves()
         self.user_valves = None
 
-    async def find_address_for_coordinates(self, latitude: float, longitude: float, __event_emitter__) -> str:
-        """
-        Resolves GPS coordinates to a specific address or place.
-        :param latitude: The latitude portion of the GPS coordinate.
-        :param longitude: The longitude portion of the GPS coordinate.
-        :return: Information about the address or place at the coordinates.
-        """
-        print(f"[OSM] Resolving [{latitude}, {longitude}] to address.")
-        return await self.find_specific_place(f"{latitude}, {longitude}", __event_emitter__)
-
-    async def find_specific_named_business_or_landmark_near_coordinates(
-            self, store_or_business_name: str, latitude: float, longitude: float, __event_emitter__
+    async def find_place(
+            self, place_or_coordinates: str, near: Optional[str] = None,
+            __event_emitter__=None
     ) -> str:
         """
-        Finds specifically named stores, businesses, or landmarks near the given
-        GPS coordinates. This can be used for general or specific things,
-        like 'gas station' or 'grocery store', or the name of a specific
-        chain (like 'Wal-Mart' or 'Albert Heijn'). This function is intended
-        for finding specific chains or businesses near the given coordinates.
-        Use this if the user asks about businesses or places nearby.
-        :param store_or_business_name: Name of store or business to look for.
-        :param latitude: The latitude portion of the GPS coordinate.
-        :param longitude: The longitude portion of the GPS coordinate.
-        :return: Information about the address or places near the coordinates.
-        """
-        print(f"[OSM] Searching for '{store_or_business_name}' near {latitude},{longitude}")
-        query = f"{store_or_business_name} {latitude},{longitude}"
-        return await self.find_specific_place(query, __event_emitter__)
-
-    async def resolve_coordinates(self, latitude: float, longitude: float, __event_emitter__) -> str:
-        """
-        Resolves GPS coordinates to a human-readable location such
-        as an address or place name. Use this to convert GPS
-        coordinates before searching if you need to figure out urban,
-        suburban, or rural setting.
-        :param latitude: The latitude portion of the GPS coordinate.
-        :param longitude: The longitude portion of the GPS coordinate.
-        :return: Reverse geocoded location or address information.
-        """
-        print(f"Reverse geocoding {latitude},{longitude}")
-        return await self.find_specific_place(f"{latitude},{longitude}", __event_emitter__)
-
-    async def find_specific_place(self, address_or_place: str, __event_emitter__) -> str:
-        """
-        Looks up details on OpenStreetMap of a specific address, landmark,
-        place, named building, or location. Used for when the user asks where
-        a specific unique entity (like a specific museum, or church, or shopping
-        center) is.
-        :param address_or_place: The address or place to look up.
+        Looks up a specific place on OpenStreetMap: an address, landmark,
+        named building or business, or GPS coordinates (what is at these
+        coordinates). To find a named business or chain near somewhere
+        (e.g. 'Albert Heijn' near given coordinates), pass its name and set
+        `near`. To find kinds of places nearby (any supermarket, any
+        dentist), use find_nearby instead.
+        :param place_or_coordinates: An address, a place or business name, or GPS coordinates as 'lat,lon'.
+        :param near: Optional place or 'lat,lon' coordinates to search around.
         :return: Information about the place, if found.
         """
-        print(f"[OSM] Searching for info on [{address_or_place}].")
+        query = f"{place_or_coordinates} {near}" if near else place_or_coordinates
+        print(f"[OSM] Searching for info on [{query}].")
         events = OsmEventEmitter(__event_emitter__)
         searcher = OsmSearcher(self.valves, self.user_valves, events)
 
         try:
-            result = await searcher.nominatim_search(address_or_place, limit=5)
+            result = await searcher.nominatim_search(query, limit=5)
             if result:
-                parser = OsmParser(address_or_place, result, category=None)
+                parser = OsmParser(query, result, category=None)
                 results = parser.convert_and_validate_results(
                     sort_message="importance", use_distance=False
                 )
@@ -3405,166 +3611,94 @@ class Tools:
                     f"The error was: {e}. "
                     f"Tell the user the error message.")
 
-    async def find_stores_by_category_near_place(
-            self, place: str, category: StoreCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
+    async def find_nearby(
+            self, place: str, what: NearbyCategory,
+            what_else: Optional[str] = None,
+            setting: Optional[UrbanSetting] = None,
+            __user__: dict = None, __event_emitter__=None
     ) -> str:
         """
-        Finds stores of a specific type on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
+        Finds things of a given kind on OpenStreetMap near a place or address:
+        shops, food and drink, recreation, travel and tourism, healthcare, and
+        education. Pick the closest matching `what`. For fuel, EV charging, and
+        places of worship, use their own tools. For anything else, use
+        what='other' and describe it in what_else.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
-        :param category: Category of store to search for.
+        :param what: Kind of place to find. shop_cannabis also finds coffeeshops and smartshops. health_pharmacy is pharmacies and chemists (drugstores). food_restaurants is sit-down restaurants. recreation_amusement is arcades, theme parks, and parks. education_schools is primary and secondary schools only.
+        :param what_else: Only for what='other': what to look for, in a few words (e.g. 'bicycle repair').
+        :param setting: Optional: whether the place is urban, suburban, or rural (controls the search radius). Leave empty to determine it automatically.
+        :return: A list of nearby places, if found.
         """
-        allowed_categories = [
-            "groceries", "convenience", "alcohol", "drugs",
-            "cannabis",  "electronics", "electrical", "hardware",
-            "diy"
-        ]
+        user_valves = (__user__ or {}).get("valves")
 
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags, not_tag_groups = store_category_to_tags(category)
+        if what == 'other':
+            return await self._find_other_near_place(place, what_else, __event_emitter__)
 
-        validation_error = validate_tags(category, tags, allowed_categories)
-        if validation_error:
-            return validation_error
+        search = NEARBY_SEARCHES.get(what)
+        if not search:
+            return invalid_value("what", what, list(NEARBY_SEARCHES) + ['other'])
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
-                                   not_tag_groups=not_tag_groups)
-
-    async def find_recreation_by_category_near_place(
-            self, place: str, category: RecreationCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
-    ) -> str:
-        """
-        Finds recreation facilities of a specific type on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        Note: amusement category can be arcades, theme parks, and similar.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
-        :param category: Category of recreation to search for.
-        """
-        allowed_categories = ["swimming", "playgrounds", "amusement", "sports", "gyms"]
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags, not_tag_groups = recreation_to_tags(category)
-
-        validation_error = validate_tags(category, tags, allowed_categories)
-        if validation_error:
-            return validation_error
-
-        radius = 4000
-        limit = 5
-
-        if category == "swimming":
-            radius = 10000
-        elif category == "amusement" or category == "sports":
-            radius = 10000
-            limit = 10
-        elif category == "playgrounds":
-            limit = 10
+        category, to_tags, radius, limit = search
+        tags, not_tag_groups = to_tags(category)
+        events = OsmEventEmitter(__event_emitter__)
+        setting = await resolve_setting(self.valves, user_valves, events, place, setting)
 
         return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
-    async def find_eateries_and_drinking_by_category_near_place(
-            self, place: str, category: EateryCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
+    async def _find_other_near_place(
+            self, place: str, what: Optional[str], __event_emitter__
     ) -> str:
         """
-        Finds places to eat or drink on OpenStreetMap near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        If it is unclear what category the user wants, ask for clarification.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
-        :param category: Category of eateries to search for.
+        Free-text Nominatim search ('<what> near <place>') for kinds of
+        places without their own category. Nominatim understands many OSM
+        place types this way ('bicycle shop', 'post office', ...).
         """
-        allowed_categories = [ "sit_down_restaurants", "fast_food", "cafe_or_bakery", "bars_and_pubs"]
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags, not_tag_groups = food_category_to_tags(category)
+        if not what:
+            return {
+                "results": [],
+                "instructions": ("There was an error: what='other' needs what_else, a short "
+                                 "description of what to look for. Call the tool again with it."),
+            }
 
-        validation_error = validate_tags(category, tags, allowed_categories)
-        if validation_error:
-            return validation_error
+        query = f"{what} near {place}"
+        print(f"[OSM] General search for [{query}].")
+        events = OsmEventEmitter(__event_emitter__)
+        searcher = OsmSearcher(self.valves, self.user_valves, events)
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
-                                   limit=10, setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
-                                   not_tag_groups=not_tag_groups)
+        try:
+            result = await searcher.nominatim_search(query, limit=10)
+        except ValueError:
+            return NO_RESULTS
+        except Exception as e:
+            print(e)
+            return (f"There are no results due to an error. "
+                    "Tell the user that there was an error. "
+                    f"The error was: {e}. "
+                    f"Tell the user the error message.")
 
-    async def find_travel_info_by_category_near_place(
-        self, place: str, category: TravelCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
-    ) -> str:
-        """
-        Find tourist attractions, accommodation, public transport, bike rentals, or car rentals on OpenStreetMap.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        If it is unclear what category the user wants, ask for clarification.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
-        :param category: Category of travel info to search for.
-        """
-        allowed_categories = ["tourist_attractions", "accommodation", "bike_rentals", "car_rentals", "public_transport"]
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags, not_tag_groups = travel_category_to_tags(category)
+        if not result:
+            return NO_RESULTS
 
-        validation_error = validate_tags(category, tags, allowed_categories)
-        if validation_error:
-            return validation_error
-
-        radius = 4000
-        limit = 5
-
-        if category == "car_rentals":
-            radius = 6000
-        elif category == "tourist_attractions":
-            radius = 10000
-            limit = 10
-        elif category == "accommodation":
-            radius = 10000
-        elif category == "public_transport":
-            limit = 10
-
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
-                                   limit=limit, radius=radius, setting=setting, place=place, tags=tags,
-                                   event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
-
-    async def find_healthcare_by_category_near_place(
-        self, place: str, category: HealthcareCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
-    ) -> str:
-        """
-        Find healthcare, doctors, dentists, hospitals, and pharmacies on OpenStreetMap.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        If it is unclear what category the user wants, ask for clarification.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
-        :param category: Category of healthcare to search for.
-        """
-        allowed_categories = ["doctor", "dentist", "hospital", "pharmacy"]
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags, not_tag_groups = healthcare_category_to_tags(category)
-
-        validation_error = validate_tags(category, tags, allowed_categories)
-        if validation_error:
-            return validation_error
-
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
-                                   not_tag_groups=not_tag_groups)
+        parser = OsmParser(query, result, category=None)
+        results = parser.convert_and_validate_results(sort_message="importance", use_distance=False)
+        return {
+            "instructions": other_search_instructions(what, place),
+            "results": results if results else []
+        }
 
     async def find_place_of_worship_near_place(
-            self, __user__: dict, place: str,
+            self, place: str,
             religion: ReligionCategory,
             denomination: DenominationCategory,
             is_common_for_area: bool,
-            setting: UrbanSetting,
-            __event_emitter__
+            setting: Optional[UrbanSetting] = None,
+            __user__: dict = None, __event_emitter__=None
     ) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
-        given place or address. For setting, specify if the place is an urban area,
-        a suburb, or a rural location. If searching for a denomination, the denomination must be part of the
+        given place or address. If searching for a denomination, the denomination must be part of the
         given religion. If NOT searching for any specific denomination, use the special 'any_denomination'
         value. If a religion is specified as not common in the requested area, the search radius
         will be greatly increased. A religion is common in the requested area if it traditionally has
@@ -3573,11 +3707,12 @@ class Tools:
         :param religion: Narrow the search to a particular religion. Use "any_religion" to search for all places of worship.
         :param denomination: Narrow search to denomination of particular religion. Denomination must match religion.
         :param is_common_for_area: Whether or not the religion or denomination is common in the requested area.
-        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param setting: Optional: whether the place is urban, suburban, or rural (controls the search radius). Leave empty to determine it automatically.
         :return: A list of nearby places of worship, if found.
         """
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
+        user_valves = (__user__ or {}).get("valves")
+        events = OsmEventEmitter(__event_emitter__)
+        setting = await resolve_setting(self.valves, user_valves, events, place, setting)
 
         # by default, look for all places of worship.
         tags = ["amenity=place_of_worship"]
@@ -3607,42 +3742,17 @@ class Tools:
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    radius_multiplier=radius_multiplier)
 
-    async def find_education_by_category_near_place(
-        self, place: str, category: EducationCategory, setting: UrbanSetting, __user__: dict, __event_emitter__
-    ) -> str:
-        """
-        Find education institutions and resources on OpenStreetMap.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
-        Note: category "schools" searches only for primary and secondary schools, NOT universities or colleges.
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
-        :param category: Category of education to search for.
-        """
-        allowed_categories = ["schools", "universities_and_colleges", "libraries"]
-        setting = normalize_setting(setting)
-        user_valves = __user__["valves"] if "valves" in __user__ else None
-        tags, not_tag_groups = education_category_to_tags(category)
-
-        validation_error = validate_tags(category, tags, allowed_categories)
-        if validation_error:
-            return validation_error
-
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
-                                   setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
-                                   not_tag_groups=not_tag_groups)
-
     async def find_fuel_or_charging_by_category_near_place(
             self, place: str, category: FuelCategory, fuel_type: FuelTypeCategory,
-            ev_charger_type: EVChargerCategory, setting: UrbanSetting,
-            __user__: dict, __event_emitter__
+            ev_charger_type: EVChargerCategory, setting: Optional[UrbanSetting] = None,
+            __user__: dict = None, __event_emitter__=None
     ) -> str:
         """
         Finds gas stations, petrol stations, fuel stations, or EV fast chargers near a given place or address.
-        For setting, specify if the place is an urban area, a suburb, or a rural location.
         Does not find slow (regular) EV chargers. EV fast charger note: 'chademo3' is not the same as 'chademo'.
-        'chademo3' is also known as 'chaoji'.j
+        'chademo3' is also known as 'chaoji'.
         :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
+        :param setting: Optional: whether the place is urban, suburban, or rural (controls the search radius). Leave empty to determine it automatically.
         :param category: Category to search for: either fossil fuels or EV fast chargers.
         :param fuel_type: Type of fossil fuel to search for.
         :param ev_charger_type: Type of EV charger to search for.
@@ -3691,6 +3801,10 @@ class Tools:
 
         if validation_error:
             return validation_error
+
+        __user__ = __user__ or {}
+        events = OsmEventEmitter(__event_emitter__)
+        setting = await resolve_setting(self.valves, __user__.get("valves"), events, place, setting)
 
         if category == "fossil_fuels":
             print(f"[OSM] WARN: Currently ignoring fuel type parameter (was '{fuel_type}')")
@@ -3741,55 +3855,3 @@ class Tools:
         if problems:
             context["skipped"] = problems
         return HTMLResponse(content=ui_html, headers=headers), context
-
-
-    # This function exists to help catch situations where the user is
-    # too generic in their query, or is looking for something the tool
-    # does not yet support. By having the model pick this function, we
-    # can direct it to report its capabilities and tell the user how
-    # to use it. It's not perfect, but it works sometimes.
-    def find_other_things_near_place(
-        self,
-        __user__: dict,
-        place: str,
-        setting: UrbanSetting,
-        category: str
-    ) -> str:
-        """
-        Find shops and other places not covered by a specific
-        category available in the other functions. Use this if the
-        user is asking for a type of store or place that other
-        functions do not support. For setting, specify if the place is
-        an urban area, a suburb, or a rural location.
-
-        :param place: The name of a place, an address, or GPS coordinates. City and country must be specified, if known.
-        :param setting: Urban-ness of the requested location. Controls search radius.
-        :param category: The category of place, shop, etc to look up.
-        :return: A list of nearby shops.
-        """
-        print(f"[OSM] Generic catch handler called with {category}")
-        resp = (
-            "# No Results Found\n"
-            f"No results were found. There was an error. Finding {category} points of interest "
-            "is not yet supported. Tell the user support will come eventually! "
-            "Tell the user that you are only capable of finding specific "
-            "categories of stores, amenities, and points of interest:\n"
-            " - Car rentals and bike rentals\n"
-            " - Public transport, libraries\n"
-            " - Education institutions (schools and universities)\n"
-            " - Grocery stores, supermarkets, convenience stores\n"
-            " - Food and restaurants\n"
-            " - Accommodation\n"
-            " - Places of Worship\n"
-            " - Hardware stores and home improvement centers\n"
-            " - Electrical and lighting stores\n"
-            " - Consumer electronics stores\n"
-            " - Healthcare (doctors, hospitals, pharmacies, and health stores)\n"
-            " - Fuel & EV charging (gas stations, DC fast chargers)\n"
-            " - Various recreational and leisure activities\n\n"
-            "Only mention things from the above list that you think the user "
-            "will be interested in, given the conversation so far. Don't mention "
-            "things not on the list. "
-            "**IMPORTANT**: Tell the user to be specific in their "
-            "query in their next message, so you can call the right function!")
-        return resp
