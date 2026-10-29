@@ -10,7 +10,14 @@
 # OpenStreetMap Tool
 
 **5.0.0:**
- - **Breaking:** fewer tools, 7 instead of 16 (about 30% less tool schema
+ - New tool `show_route_map`: shows a route on a map, with the route line,
+   start (A) and destination (B), distance and travel time, and the
+   turn-by-turn directions. Clicking a direction highlights that part of
+   the route. `navigate_between_places` returns a `route_id` (the route is
+   kept for 7 days); `show_route_map` only takes that ID, so the model
+   must navigate first, and the map shows exactly the route it reported.
+   Drawn from the route geometry ORS already returns: no extra requests.
+ - **Breaking:** fewer tools, 8 instead of 16 (about 30% less tool schema
    in every request). Update system prompts that name old tools.
    - `find_place` replaces `find_specific_place`, `find_address_for_coordinates`,
      `resolve_coordinates` and

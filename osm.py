@@ -8,6 +8,7 @@ required_open_webui_version: 0.6.31
 requirements: openrouteservice, pygments
 """
 import asyncio
+import hashlib
 import itertools
 import json
 import math
@@ -22,6 +23,7 @@ from contextlib import contextmanager
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from html import escape as html_escape
 
 try:
     import fcntl
@@ -36,6 +38,7 @@ from pygments.formatters import HtmlFormatter
 import openrouteservice
 from openrouteservice.directions import directions as ors_directions
 from openrouteservice.distance_matrix import distance_matrix as ors_distance_matrix
+from openrouteservice.convert import decode_polyline
 
 from urllib.parse import urljoin, urlparse
 from operator import itemgetter
@@ -128,16 +131,8 @@ SHOW_MAP_CONTEXT = {
     ),
 }
 
-MAP_UI = """
-<!DOCTYPE html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta name="color-scheme" content="light dark">
-        <title>Search Results</title>
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <style>
+# Styling shared by the POI and route maps.
+MAP_STYLE = """
          * {
              margin: 0;
              padding: 0;
@@ -229,32 +224,10 @@ MAP_UI = """
              }
              .leaflet-popup-content a { color: #8bcaff; }
          }
-        </style>
-    </head>
-    <body>
-        <div class="container" id="app">
-            <h1>Map Results for {REPLACE_WITH_CATEGORY}</h1>
-            <p class="subtitle">Data from OpenStreetMap</p>
+"""
 
-            <div class="results">
-                <div class="map-container">
-                    <h2>Map</h2>
-                    <div id="map"></div>
-                </div>
-
-                <div class="poi-list-container">
-                    <h2>POI List</h2>
-                    <ul id="poi-list"></ul>
-                </div>
-            </div>
-        </div>
-
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <script>
-         // POI data with coordinates and names
-         // [ { name, coords, lat, lon, description } ]
-         const poiData = {REPLACE_WITH_POI_RESULTS};
-
+# Reports the page height to Open WebUI, which sizes the embed to fit.
+MAP_HEIGHT_SCRIPT = """
          function getContentHeight() {
              const app = document.getElementById('app');
              if (!app) return 0;
@@ -282,6 +255,45 @@ MAP_UI = """
                  notifyParentOfHeight();
              });
          }
+"""
+
+MAP_UI = """
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light dark">
+        <title>Search Results</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+{MAP_STYLE}        </style>
+    </head>
+    <body>
+        <div class="container" id="app">
+            <h1>Map Results for {REPLACE_WITH_CATEGORY}</h1>
+            <p class="subtitle">Data from OpenStreetMap</p>
+
+            <div class="results">
+                <div class="map-container">
+                    <h2>Map</h2>
+                    <div id="map"></div>
+                </div>
+
+                <div class="poi-list-container">
+                    <h2>POI List</h2>
+                    <ul id="poi-list"></ul>
+                </div>
+            </div>
+        </div>
+
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+         // POI data with coordinates and names
+         // [ { name, coords, lat, lon, description } ]
+         const poiData = {REPLACE_WITH_POI_RESULTS};
+
+{MAP_HEIGHT_SCRIPT}
 
          // Function to create the map
          function createMap(poiData) {
@@ -413,6 +425,247 @@ MAP_UI = """
     </body>
 </html>
 """
+
+MAP_UI = (MAP_UI.replace("{MAP_STYLE}", MAP_STYLE)
+          .replace("{MAP_HEIGHT_SCRIPT}", MAP_HEIGHT_SCRIPT))
+
+ROUTE_MAP_UI = """
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light dark">
+        <title>Route</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+{MAP_STYLE}
+         .route-marker span { width: 28px; height: 28px; font-size: 13px; }
+         .route-marker.start span { background: #2e7d32; }
+         .route-marker.end span { background: #a63b00; }
+         .step-detail { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+         .poi-item.active .step-detail { color: #fff; }
+        </style>
+    </head>
+    <body>
+        <div class="container" id="app">
+            <h1>{REPLACE_WITH_TITLE}</h1>
+            <p class="subtitle" id="route-summary"></p>
+
+            <div class="results">
+                <div class="map-container">
+                    <h2>Map</h2>
+                    <div id="map"></div>
+                </div>
+
+                <div class="poi-list-container">
+                    <h2>Directions</h2>
+                    <ul id="poi-list"></ul>
+                </div>
+            </div>
+        </div>
+
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+         // { mode, distance_km, duration_min, start: { name, lat, lon },
+         //   end: { name, lat, lon }, coordinates: [[lat, lon], ...],
+         //   steps: [{ instruction, distance_km, duration_s, from, to }] }
+         // Step from/to are indexes into coordinates.
+         const route = {REPLACE_WITH_ROUTE};
+
+{MAP_HEIGHT_SCRIPT}
+
+         function formatDistance(km) {
+             return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+         }
+
+         function formatDuration(minutes) {
+             if (minutes < 1) return `${Math.max(1, Math.round(minutes * 60))} s`;
+             if (minutes < 60) return `${Math.round(minutes)} min`;
+             return `${Math.floor(minutes / 60)} h ${Math.round(minutes % 60)} min`;
+         }
+
+         function endpointMarker(point, label, className) {
+             const icon = L.divIcon({
+                 className: `poi-marker route-marker ${className}`,
+                 html: `<span>${label}</span>`,
+                 iconSize: [28, 28],
+                 iconAnchor: [14, 14],
+                 popupAnchor: [0, -16]
+             });
+             const marker = L.marker([point.lat, point.lon], { icon, title: point.name });
+             const popup = document.createElement('div');
+             const name = document.createElement('strong');
+             name.textContent = point.name;
+             popup.appendChild(name);
+             marker.bindPopup(popup);
+             return marker;
+         }
+
+         function createRouteMap(route) {
+             const map = L.map('map', { minZoom: 3, maxZoom: 18 });
+             L.tileLayer('{REPLACE_WITH_TILE_SERVER}', {
+                 attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, routing by <a href="https://openrouteservice.org/">openrouteservice</a>'
+             }).addTo(map);
+
+             const line = L.polyline(route.coordinates, {
+                 color: '#1769aa', weight: 5, opacity: 0.85
+             }).addTo(map);
+             endpointMarker(route.start, 'A', 'start').addTo(map);
+             endpointMarker(route.end, 'B', 'end').addTo(map);
+             map.fitBounds(line.getBounds(), { padding: [32, 32], maxZoom: 17 });
+
+             let highlight = null;
+             const buttons = [];
+
+             route.steps.forEach((step, index) => {
+                 const listItem = document.createElement('li');
+                 const button = document.createElement('button');
+                 button.type = 'button';
+                 button.className = 'poi-item';
+                 button.setAttribute('aria-pressed', 'false');
+
+                 const title = document.createElement('span');
+                 title.className = 'poi-title';
+                 title.textContent = `${index + 1}. ${step.instruction}`;
+                 button.appendChild(title);
+
+                 if (step.distance_km > 0) {
+                     const detail = document.createElement('span');
+                     detail.className = 'step-detail';
+                     detail.textContent = `${formatDistance(step.distance_km)} · ${formatDuration(step.duration_s / 60)}`;
+                     button.appendChild(detail);
+                 }
+
+                 button.onclick = () => {
+                     const part = route.coordinates.slice(step.from, step.to + 1);
+                     if (highlight) highlight.remove();
+                     highlight = L.polyline(part.length > 1 ? part : [part[0], part[0]], {
+                         color: '#a63b00', weight: 8, opacity: 0.9
+                     }).addTo(map);
+                     map.flyToBounds(highlight.getBounds(), { padding: [48, 48], maxZoom: 17 });
+                     buttons.forEach((other, i) => {
+                         other.classList.toggle('active', i === index);
+                         other.setAttribute('aria-pressed', String(i === index));
+                     });
+                     scheduleHeightReport();
+                 };
+
+                 buttons.push(button);
+                 listItem.appendChild(button);
+                 document.getElementById('poi-list').appendChild(listItem);
+             });
+
+             return map;
+         }
+
+         document.getElementById('route-summary').textContent =
+             `${formatDistance(route.distance_km)} · ${formatDuration(route.duration_min)} by ${route.mode} · Data from OpenStreetMap`;
+
+         if (route.coordinates.length > 0) {
+             const map = createRouteMap(route);
+             map.whenReady(scheduleHeightReport);
+             const mapResizeObserver = new ResizeObserver(() => {
+                 requestAnimationFrame(() => {
+                     map.invalidateSize({ pan: false });
+                     scheduleHeightReport();
+                 });
+             });
+             mapResizeObserver.observe(document.getElementById('map'));
+         } else {
+             document.querySelector('.results').replaceChildren();
+             const empty = document.createElement('p');
+             empty.className = 'empty-results';
+             empty.textContent = 'No route to display.';
+             document.querySelector('.results').appendChild(empty);
+         }
+
+         window.addEventListener('load', scheduleHeightReport);
+         window.addEventListener('resize', scheduleHeightReport);
+         const resizeObserver = new ResizeObserver(scheduleHeightReport);
+         resizeObserver.observe(document.getElementById('app'));
+        </script>
+    </body>
+</html>
+"""
+
+ROUTE_MAP_UI = (ROUTE_MAP_UI.replace("{MAP_STYLE}", MAP_STYLE)
+                .replace("{MAP_HEIGHT_SCRIPT}", MAP_HEIGHT_SCRIPT))
+
+# Sent to the model after show_route_map, to stop it from faking or
+# announcing a map.
+SHOW_ROUTE_MAP_CONTEXT = {
+    "status": "success",
+    "message": (
+        "The route map, with the turn-by-turn directions, is already displayed "
+        "to the user directly ABOVE your reply. Do not announce the map or point "
+        "to where it is, and never write placeholders such as [Map displayed]. "
+        "Reply with a short sentence or two at most. Do NOT include images, "
+        "markdown image syntax, map links, or the directions again."
+    ),
+}
+
+# How long a route found by navigation can be shown on a map.
+ROUTE_MAP_TTL = 7 * 24 * 3600
+
+
+def save_route_for_map(route: dict, mode: str, start: dict, destination: dict,
+                       start_name: str, destination_name: str) -> str:
+    """
+    Keep a route found by navigation, so show_route_map can draw exactly
+    that route. Returns the route_id the model passes to show_route_map.
+    """
+    key_data = json.dumps([mode, route.get('geometry'), start_name, destination_name])
+    route_id = hashlib.sha1(key_data.encode()).hexdigest()[:12]
+    OsmCache().set(f"route_map_{route_id}", {
+        'route': route, 'mode': mode,
+        'start': {k: start[k] for k in ('lat', 'lon', 'display_name') if k in start},
+        'destination': {k: destination[k] for k in ('lat', 'lon', 'display_name') if k in destination},
+        'start_name': start_name, 'destination_name': destination_name,
+    }, ttl=ROUTE_MAP_TTL)
+    return route_id
+
+
+def route_map_html(route: dict, mode: str, start: dict, destination: dict,
+                   start_name: str, destination_name: str, tile_server: str) -> str:
+    """
+    The route map page for an ORS route (see ROUTE_MAP_UI). The names are
+    the places as asked for: Nominatim's display names can start with
+    something like a platform number.
+    """
+    def endpoint(place: dict, name: str) -> dict:
+        return {'name': name, 'lat': float(place['lat']), 'lon': float(place['lon'])}
+
+    coordinates = decode_polyline(route['geometry'])['coordinates'] if route.get('geometry') else []
+    steps = [
+        {
+            'instruction': step.get('instruction', ''),
+            'distance_km': step.get('distance', 0.0),
+            'duration_s': step.get('duration', 0.0),
+            'from': step.get('way_points', [0, 0])[0],
+            'to': step.get('way_points', [0, 0])[-1],
+        }
+        for segment in route.get('segments', [])
+        for step in segment.get('steps', [])
+    ]
+    summary = route.get('summary', {})
+    payload = {
+        'mode': TRAVEL_MODE_NAMES[mode],
+        'distance_km': summary.get('distance', 0.0),
+        'duration_min': summary.get('duration', 0.0) / 60.0,
+        'start': endpoint(start, start_name),
+        'end': endpoint(destination, destination_name),
+        'coordinates': [[round(lat, 5), round(lon, 5)] for lon, lat in coordinates],
+        'steps': steps,
+    }
+
+    title = f"Route from {start_name} to {destination_name}"
+    # Escape "</" so a name or instruction can't close the <script> early.
+    route_json = json.dumps(payload).replace("</", "<\\/")
+    return (ROUTE_MAP_UI
+            .replace("{REPLACE_WITH_ROUTE}", route_json)
+            .replace("{REPLACE_WITH_TITLE}", html_escape(title))
+            .replace("{REPLACE_WITH_TILE_SERVER}", tile_server))
 
 #####################################################
 # Category Type Aliases
@@ -3166,6 +3419,12 @@ class OsmNavigator:
                 result["instructions"] += " Also mention the travel time of the alternative."
                 result["alternative"] = alternative
 
+            result["route_id"] = save_route_for_map(route, mode, start, destination,
+                                                    start_place, destination_place)
+            result["instructions"] += (
+                " To show this route on a map, call show_route_map with this route_id."
+            )
+
             await self.events.navigating(done=True)
             return result
         except Exception as e:
@@ -3571,6 +3830,8 @@ class Tools:
     ) -> str:
         """
         Retrieve a navigation route and associated information between two places.
+        The result includes a route_id: pass it to show_route_map to show the
+        route on a map.
         :param start_address_or_place: The address, place, or coordinates to start from.
         :param destination_address_or_place: The destination address, place, or coordinates to go.
         :param travel_mode: 'car', 'bike', or 'walk'. Only set this if the user asked for a specific way of traveling (driving, cycling, walking). Otherwise leave it empty, and a mode is chosen by distance.
@@ -3814,6 +4075,29 @@ class Tools:
                 self.valves, __user__, place, ev_charger_type, setting, __event_emitter__
             )
 
+
+    def show_route_map(self, route_id: str):
+        """
+        Shows a route on a map, with the turn-by-turn directions. You MUST call
+        navigate_between_places first: pass the route_id from its result. This
+        tool does not find routes itself. Use it when the user wants to see the
+        route, or when a map helps more than the directions in text.
+        :param route_id: The route_id returned by navigate_between_places.
+        :return: HTML for displaying the route map.
+        """
+        saved = OsmCache().get(f"route_map_{str(route_id).strip()}")
+        if not saved:
+            return {
+                "status": "error",
+                "message": ("No route with this route_id. Call navigate_between_places "
+                            "first, then call show_route_map with the route_id from "
+                            "its result."),
+            }
+
+        page = route_map_html(saved['route'], saved['mode'], saved['start'], saved['destination'],
+                              saved['start_name'], saved['destination_name'],
+                              self.valves.tile_server)
+        return HTMLResponse(content=page, headers={"Content-Disposition": "inline"}), SHOW_ROUTE_MAP_CONTEXT
 
     def show_map(self, category: POICategory, results: List[OsmPOI]):
         """

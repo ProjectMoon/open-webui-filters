@@ -76,6 +76,9 @@ _No testing is currently done with ollama._
 
 4. **Navigation**
    - Uses **OpenRouteService (ORS)** to calculate routes (requires API key).
+   - Can show the route on a map (`show_route_map`, after navigating),
+     with turn-by-turn directions you can click to zoom to that part of
+     the route.
    - Supports:
      - 🚶 Walking directions
      - 🚲 Cycling routes
