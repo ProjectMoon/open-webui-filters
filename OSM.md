@@ -73,6 +73,16 @@ _No testing is currently done with ollama._
      - 🚶 Walking directions
      - 🚲 Cycling routes
      - 🚗 Driving navigation
+   - Ask for a specific travel mode ("by bike", "walking"), or let the tool
+     choose: walking up to 1.5 km; between 1.5 and 15 km it compares bike
+     and car travel times, favoring the bike in places with lots of
+     separated cycle paths; car beyond that.
+
+5. **Locality info**
+   - What a place is like for getting around: country, city/town/village,
+     road density, one-way streets, and cycling infrastructure nearby.
+   - Only modes the ORS instance serves are used. A self-hosted instance
+     may have fewer profiles than the public one.
 
 ---
 

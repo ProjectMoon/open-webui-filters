@@ -9,6 +9,52 @@
 
 # OpenStreetMap Tool
 
+**4.2.0:**
+ - Navigation takes an optional travel mode: `car`, `bike` or `walk`. The
+   model should only set it when the user asks for a specific way of
+   traveling. Without it, the mode is chosen by distance: walking up to
+   1.5 km (bike, then car, if walking isn't available), car beyond that
+   (bike if there's no car profile).
+ - The tool asks the ORS instance which profiles it serves (`/v2/status`)
+   and caches the answer per ORS URL for an hour. Instances without a
+   status endpoint, such as the public ORS, are assumed to serve all three.
+   If a requested mode isn't available, the model is told which ones are.
+ - Route cache keys include the travel mode, so a cached car route is no
+   longer returned for a bike request.
+ - Navigation between two places picks the mode from the distance between
+   them. Previously it always used the car profile.
+ - Between 1.5 and 15 km (straight line), automatic navigation compares
+   bike and car: bike wins if it takes at most 2× as long as the car where
+   both ends are bike-friendly, 1.2× if either end isn't, and 1.5× when
+   there's no street data. The result says why, and includes the other
+   mode's distance and time. If only one mode has a route, that one is
+   used. If neither does, the model is told the routing service may not
+   cover the area.
+ - New valves `fallback_to_public_instances` (default off) and
+   `ors_fallback_api_key`. With a custom Overpass or ORS instance, a request
+   that errors or returns nothing (e.g. outside the instance's map area)
+   is retried on the public instance. For Overpass, an empty result only
+   falls back if the custom instance has no roads within 1 km of the
+   search location (checked once per ~1 km area, cached 30 days): inside
+   its map, "nothing found" is a real answer and the public instance
+   isn't contacted. ORS fallback uses `ors_fallback_api_key`, or
+   `ors_api_key` if that's empty. Modes the custom instance lacks (e.g.
+   walking) are served by the public ORS. Self-hosted instances are
+   assumed to have gaps.
+ - New tool `find_locality_info`: what a place is like for getting around
+   (country, city/town/village/hamlet, road density, one-way streets,
+   cycling infrastructure within 1.5 km), from Nominatim and one Overpass
+   count query. Bike-friendly means at least 15 separated cycle paths per
+   100 roads. Painted lanes don't count: US suburbs have as many as Dutch
+   towns. Street stats are cached for 90 days on a ~100 m grid. Places the
+   Overpass instance has no roads for are reported as having no street
+   data, and not cached.
+ - Log lines show which Nominatim, Overpass and ORS host each request goes to.
+ - Fix the cache losing entries: each cache object wrote its own snapshot
+   over the whole file, so entries saved by others during the same tool
+   call were lost. It now re-reads the file before saving. An emptied
+   cache file no longer fails to load.
+
 **4.1.9:**
  - Fix map not rendering (stuck in a scrollable box) when the model passes
    `distance` as a string like `"0.486 km"`: `show_map` now coerces
