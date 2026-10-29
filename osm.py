@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 5.0.0
+version: 5.1.0
 license: AGPL-3.0+
 required_open_webui_version: 0.12.5
 requirements: openrouteservice, pygments
@@ -1114,6 +1114,7 @@ def navigation_instructions(travel_type) -> str:
     )
 
 PUBLIC_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+PUBLIC_NOMINATIM_URL = "https://nominatim.openstreetmap.org/"
 
 # Overpass request pacing. The tool keeps no state between calls, so the
 # Retry-After deadline per host lives in the cache file, and a lock file
@@ -2590,6 +2591,25 @@ class OsmSearcher:
             raise error
         return response
 
+    def nominatim_urls(self, endpoint: str) -> (List[str], str):
+        """
+        Nominatim URLs for an endpoint, in the order to try them: the
+        configured instance, then the public one if fallback is on and
+        the configured one is custom. Also returns the log hint for when
+        fallback is off.
+        """
+        custom = api_host(self.nominatim_url) != api_host(PUBLIC_NOMINATIM_URL)
+        urls = [urljoin(self.nominatim_url, endpoint)]
+        if custom and self.fallback_to_public:
+            urls.append(urljoin(PUBLIC_NOMINATIM_URL, endpoint))
+
+        if custom and not self.fallback_to_public:
+            fallback_hint = " (public fallback is off: see fallback_to_public_instances)"
+        else:
+            fallback_hint = ""
+
+        return urls, fallback_hint
+
     def create_headers(self) -> Optional[dict]:
         if len(self.user_agent) == 0 or len(self.from_header) == 0:
             return None
@@ -2727,21 +2747,47 @@ class OsmSearcher:
         else:
             print(f"[OSM] Looking up {len(lookups)} things from Nominatim")
 
-        url = urljoin(self.nominatim_url, "lookup")
-        print(f"[OSM] Nominatim lookup via {api_host(url)}")
-        params = {
-            'osm_ids': ",".join(lookups),
-            'format': format
-        }
-
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
 
-        response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
+        # Things the custom instance doesn't have (e.g. outside its map
+        # area) are looked up on the public instance, if fallback is on.
+        urls, fallback_hint = self.nominatim_urls("lookup")
+        data, remaining = [], lookups
+        response, error = None, None
+        for url in urls:
+            print(f"[OSM] Nominatim lookup of {len(remaining)} things via {api_host(url)}")
+            params = {
+                'osm_ids': ",".join(remaining),
+                'format': format
+            }
 
+            try:
+                response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
+            except Exception as e:
+                print(f"[OSM] Nominatim error from {api_host(url)}: {e}{fallback_hint}")
+                error = e
+                continue
+
+            if response.status_code != 200:
+                print(f"[OSM] Nominatim error from {api_host(url)} (HTTP {response.status_code})"
+                      f"{fallback_hint}")
+                continue
+
+            found = response.json()
+            data.extend(found)
+            found_ids = {f"{NOMINATIM_LOOKUP_TYPES.get(item.get('osm_type'))}{item.get('osm_id')}"
+                         for item in found}
+            remaining = [id for id in remaining if id not in found_ids]
+            if len(remaining) == 0:
+                break
+            print(f"[OSM] {len(remaining)} things not found on {api_host(url)}{fallback_hint}")
+
+        if response is None:
+            raise error
+
+        if data or response.status_code == 200:
             if not data:
                 print("[OSM] No results found for lookup")
                 return []
@@ -2780,8 +2826,6 @@ class OsmSearcher:
         if not quiet:
             await self.events.resolving(done=False, message=query)
 
-        url = urljoin(self.nominatim_url, "search")
-        print(f"[OSM] Searching Nominatim ({api_host(url)}) for: {query}")
         params = {
             'q': query,
             'format': format,
@@ -2794,7 +2838,28 @@ class OsmSearcher:
             await self.events.error("Headers not set")
             raise ValueError("Headers not set")
 
-        response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
+        # No results or an error from a custom instance (e.g. a place
+        # outside its map area) is retried on the public one, if fallback
+        # is on.
+        urls, fallback_hint = self.nominatim_urls("search")
+        response, error = None, None
+        for url in urls:
+            print(f"[OSM] Searching Nominatim ({api_host(url)}) for: {query}")
+            try:
+                response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
+            except Exception as e:
+                print(f"[OSM] Nominatim error from {api_host(url)}: {e}{fallback_hint}")
+                error = e
+                continue
+
+            if response.status_code == 200 and response.json():
+                break
+            print(f"[OSM] No results from {api_host(url)} (HTTP {response.status_code})"
+                  f"{fallback_hint}")
+
+        if response is None:
+            raise error
+
         if response.status_code == 200:
             data = response.json()
 
@@ -3813,7 +3878,7 @@ class Tools:
             default="", description="Email address to identify your OSM requests."
         )
         nominatim_url: str = Field(
-            default="https://nominatim.openstreetmap.org/",
+            default=PUBLIC_NOMINATIM_URL,
             description="URL of OSM Nominatim API for reverse geocoding (address lookup)."
         )
         overpass_turbo_url: str = Field(
@@ -3836,7 +3901,7 @@ class Tools:
         )
         fallback_to_public_instances: bool = Field(
             default=False,
-            description=("Off by default. When a custom Overpass or ORS instance returns an "
+            description=("Off by default. When a custom Nominatim, Overpass or ORS instance returns an "
                          "error or no data (e.g. outside its map area), retry on the public instance. "
                          "ORS fallback uses ors_fallback_api_key, or ors_api_key if that's empty.")
         )

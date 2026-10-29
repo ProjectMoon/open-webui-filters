@@ -9,6 +9,13 @@
 
 # OpenStreetMap Tool
 
+**5.1.0:**
+ - `fallback_to_public_instances` now also covers Nominatim. With a
+   custom Nominatim instance, a search that errors or finds nothing (e.g.
+   a place outside the instance's map area) is retried on the public
+   Nominatim. Lookups retry only the things the custom instance didn't
+   have. With fallback off, the log says when it would have been tried.
+
 **5.0.0:**
  - New tool `show_route_map`: shows a route on a map, with the route line,
    start (A) and destination (B), distance and travel time, and the

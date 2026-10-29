@@ -122,7 +122,7 @@ _No testing is currently done with ollama._
   - Default: Public ORS instance (`https://api.openrouteservice.org`).
   - Can be changed to a custom ORS instance if self-hosted.
 - **Fallback to Public Instances** (**off by default**):
-  - For self-hosted Overpass or ORS instances that only cover part of the
+  - For self-hosted Nominatim, Overpass or ORS instances that only cover part of the
     world. When on, requests your instance can't answer (errors, or no data
     outside its map area) are retried on the public instance.
   - With it off, the tool log says so whenever a fallback would have been
