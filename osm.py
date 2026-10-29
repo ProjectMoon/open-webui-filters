@@ -4,7 +4,7 @@ author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
 version: 5.0.0
 license: AGPL-3.0+
-required_open_webui_version: 0.6.31
+required_open_webui_version: 0.12.5
 requirements: openrouteservice, pygments
 """
 import asyncio
