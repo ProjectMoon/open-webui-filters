@@ -9,6 +9,17 @@
 
 # OpenStreetMap Tool
 
+**5.2.0:**
+ - Removed the Instruction Oriented Interpretation setting (valve and
+   user valve). Results always use the simple instructions.
+ - Overpass search results are cached for 7 days, keyed by the query
+   alone, so custom and public instances share entries. Empty results
+   aren't cached.
+ - Fixed Nominatim lookups dropping cached results when the remaining
+   lookups returned nothing or failed, and lookups mixing up a node and
+   a way with the same ID.
+ - Removed the check for the pre-1.0 Nominatim URL setting.
+
 **5.1.0:**
  - `fallback_to_public_instances` now also covers Nominatim. With a
    custom Nominatim instance, a search that errors or finds nothing (e.g.

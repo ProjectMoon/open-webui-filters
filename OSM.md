@@ -44,7 +44,6 @@ _No testing is currently done with ollama._
 - **Context Window**: Ensure models have sufficient context window size (a minimum of 8k is recommended).
 - **Qwen 2.5 14b** and **Mistral Nemo** are older models that aren't officially recommended, but should work fine for most use cases.
 - **Llama 3.1 8b** is not recommended. It may work with very explicit prompts.
-- **Weaker models** may need the **"Instruction Oriented Interpretation"** setting disabled for consistent results.
 
 ---
 
@@ -112,9 +111,6 @@ _No testing is currently done with ollama._
   - Used for querying OpenStreetMap for POIs.
 
 ### 🔄 Advanced Options
-- **Instruction Oriented Interpretation**:
-  - **Enabled**: Provides detailed parsing instructions to the model (recommended).
-  - **Disabled**: Simplifies output for weaker models.
 - **Status Indicators**: Shows real-time tool activity in the UI.
 - **ORS API Key**: Required for navigation and acccurate distance calculations.
   - Sign up at [OpenRouteService](https://openrouteservice.org/) and input the key in the tool settings.
@@ -170,7 +166,6 @@ The tool will not function without valid **User-Agent** and **From Header** sett
   - Verify search radius (urban/suburban/rural) is correct. Explicitly tell the model to use the correct one if necessary.
 - **Model Misbehavior**:
   - Use a stronger model.
-  - Disable **Instruction Oriented Interpretation** for weaker models.
   - Explicitly specify which tool function for the model to use (e.g. "Use the find eateries tool").
 
 ---

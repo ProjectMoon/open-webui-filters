@@ -135,10 +135,6 @@ These are the current settings:
  - **Overpass Turbo API URL:** URL of the API endpoint for Overpass
    Turbo, for searching OpenStreetMap. Defaults to the public
    endpoint.
- - **Instruction Oriented Interpretation:** Controls the level of
-   detail in the instructions for interpreting results given to the
-   LLM. By default, it gives detailed instructions. Turn this setting
-   off if results are inconsistent, wrong, or missing.
  - **Status Indicators:** If enabled, emit update events to the web
    UI, showing what the tool is doing and what search results it has
    found, or if it has encountered an error.

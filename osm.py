@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 5.1.0
+version: 5.2.0
 license: AGPL-3.0+
 required_open_webui_version: 0.12.5
 requirements: openrouteservice, pygments
@@ -922,20 +922,6 @@ NOMINATIM_LOOKUP_TYPES = {
     "way": "W"
 }
 
-OLD_VALVE_SETTING = """ Tell the user that you cannot search
-OpenStreetMap until the configuration is fixed. The Nominatim URL
-valve setting needs to be updated. There has been a breaking change in
-1.0 of the OpenStreetMap tool. The valve setting is currently set to:
-`{OLD}`.
-
-It shoule be set to the root URL of the Nominatim endpoint, for
-example:
-
-`https://nominatim.openstreetmap.org/`
-
-Inform the user they need to fix this configuration setting.
-""".replace("\n", " ").strip()
-
 VALVES_NOT_SET = {
     "results": [],
     "instructions": (
@@ -1009,22 +995,7 @@ NO_RESULTS_BAD_ADDRESS = {
                       "Use the address the user searched for in your example.")
     }
 
-NO_CONFUSION = ("**IMPORTANT!:** Check that the results match the location "
-                "the user is talking about, by analyzing the conversation history. "
-                "Sometimes there are places with the same "
-                "names, but in different cities or countries. If the results are for "
-                "a different city or country than the user is interested in, say so: "
-                "tell the user that the results are for the wrong place, and tell them "
-                "to be more specific in their query.")
-
-# Give examples of OSM links to help prevent wonky generated links
-# with correct GPS coords but incorrect URLs.
 EXAMPLE_OSM_LINK = "https://www.openstreetmap.org/#map=19/<lat>/<lon>"
-OSM_LINK_INSTRUCTIONS = (
-    "When necessary, make friendly human-readable OpenStreetMap links "
-    "by using the latitude and longitude of the amenities: "
-    f"{EXAMPLE_OSM_LINK}\n\n"
-)
 
 NO_CITATION_LIST_PROHIBITION = (
     "**Do NOT** append a citation list, reference list, source list, or "
@@ -1046,13 +1017,6 @@ CITATION_FORMAT = (
     "WRONG: [citation 3], [id:3], [source 3], [Citation: 3], (3), [^3]. "
     "RIGHT: [3]."
 )
-
-CITATION_INSTRUCTIONS = [
-    "Always use inline citations, using the citation_id of each source.",
-    CITATION_FORMAT,
-    "Always use inline citations for information relating to a result. ",
-    NO_CITATION_LIST
-]
 
 #####################################################
 # Global Utils
@@ -1215,83 +1179,9 @@ def unavailable_travel_mode(travel_mode: str, available: List[str]) -> str:
         "Do not make up a route."
     )
 
-def list_instructions(tag_type: str, used_rel: bool) -> List[str]:
-    """
-    Produce detailed instructions in a structured manner for
-    models that support it.
-    """
-    instructions = {
-        "result_accuracy": [],
-        "information_reporting": [],
-        "links": [],
-        "citations": []
-    }
-
-    # basic instructions
-    if used_rel:
-        instructions["result_accuracy"].append(
-            "You **MUST** Begin your reply by explaining to the user "
-            "that we could not search the entire area, "
-            "and therefore we did not get all results."
-        )
-        instructions["result_accuracy"].append(
-            "Inform the user that more accurate results can be found by "
-            "using more specific search terms like a street or specific landmark."
-        )
-    else:
-        instructions["result_accuracy"].append("These are the results known to be closest to the requested location.")
-
-    instructions["result_accuracy"].append("When saying the location name, use the resolved_location field.")
-
-    # how to report information
-    instructions["information_reporting"].append(
-        "When telling the user about the results, make sure to report "
-        "all information relevant to the user's query (address, contact info, website, etc)."
-    )
-
-    instructions["information_reporting"].append(
-        "Do not report information that is irrelvant to the user's query."
-    )
-
-    instructions["information_reporting"].append(
-        "Prefer closer results by TRAVEL DISTANCE first. "
-        "Closer results are higher in the list."
-    )
-
-    instructions["information_reporting"].append(
-        "When telling the user the distance, use the TRAVEL DISTANCE. Do not say one "
-        "distance is farther away than another. Just say what the distances are. "
-    )
-
-    instructions["information_reporting"].append(
-        "Only use relevant results. If there are no relevant results, "
-        "say so. Do not make up answers or hallucinate. "
-    )
-
-    instructions["information_reporting"].append(NO_CONFUSION)
-    instructions["information_reporting"].append(
-        "Remember that the CLOSEST result is first, and you should use "
-        "that result first."
-    )
-
-    # links and citations
-    instructions["links"].append(OSM_LINK_INSTRUCTIONS)
-    instructions["links"].append(
-        "Give map links friendly, contextual labels. "
-        "Don't just print the naked link. "
-        f"Example: `You can view it on [OpenStreetMap]({EXAMPLE_OSM_LINK})`"
-    )
-
-    instructions["citations"].extend(CITATION_INSTRUCTIONS)
-
-
-    return instructions
-
-
 def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
     """
-    Produce simpler markdown-oriented instructions for models that do
-    better with that.
+    Instructions for interpreting nearby point of interest results.
     """
     if used_rel:
         rel_inst = (
@@ -1962,6 +1852,7 @@ class OsmParser:
 # How long cached data stays valid.
 CACHE_TTL_ROUTES = 30 * 24 * 3600   # routes and travel distances (maps change)
 CACHE_TTL_PLACES = 90 * 24 * 3600   # Nominatim search and lookup results
+CACHE_TTL_POIS = 7 * 24 * 3600      # Overpass search results
 
 def osm_data_dir() -> str:
     """
@@ -2023,22 +1914,6 @@ class OsmCache:
         with self._db() as db:
             db.execute("DELETE FROM cache WHERE key = ?", (key,))
 
-    def get_or_set(self, key, func_to_call, ttl: Optional[float] = None):
-        """
-        Retrieve the value from the cache for a given key. If the key is not found,
-        call `func_to_call` to generate the value and store it in the cache.
-
-        :param key: The key to look up or set in the cache
-        :param func_to_call: A callable function that returns the value if key is missing
-        :param ttl: Seconds until the stored value expires (None: never)
-        :return: The cached or generated value
-        """
-        value = self.get(key)
-        if value is None:
-            value = func_to_call()
-            self.set(key, value, ttl)
-        return value
-
     def clear_cache(self):
         """
         Clear all entries from the cache.
@@ -2066,7 +1941,7 @@ class OrsRouter:
     PROFILE_CACHE_SECONDS = 3600
 
     def __init__(
-        self, valves, user_valves, events: OsmEventEmitter
+        self, valves, events: OsmEventEmitter
     ):
         self.cache = OsmCache()
         self.events = events
@@ -2354,10 +2229,9 @@ class OrsRouter:
 #####################################################
 
 class OsmSearcher:
-    def __init__(self, valves, user_valves, event_emitter):
+    def __init__(self, valves, event_emitter):
         self.events = event_emitter
         self.valves = valves
-        self.user_valves = user_valves
 
         # config settings
         self.nominatim_url = valves.nominatim_url
@@ -2366,11 +2240,9 @@ class OsmSearcher:
         self.user_agent = valves.user_agent
         self.from_header = valves.from_header
         self.include_raw_data = valves.include_raw_osm_data
-        self.detailed_instructions = (user_valves.instruction_oriented_interpretation
-                                      if user_valves else valves.instruction_oriented_interpretation)
 
         # dependents
-        self._ors = OrsRouter(valves, user_valves, event_emitter)
+        self._ors = OrsRouter(valves, event_emitter)
 
     @staticmethod
     def sort_by_rank(things):
@@ -2645,7 +2517,7 @@ class OsmSearcher:
             try:
                 place = {'lat': origin['lat'], 'lon': origin['lon'],
                          'display_name': None, 'address': {}}
-                locality = OsmLocality(self.valves, self.user_valves, self.events)
+                locality = OsmLocality(self.valves, self.events)
                 bike_friendly = locality.describe(place)['bike_friendly']
                 found = self._ors.calculate_distances(origin, uncached, bike_friendly)
             except Exception as e:
@@ -2666,12 +2538,6 @@ class OsmSearcher:
             thing['nav_distance'] = round(nav_distances.get(thing['id'], thing['distance']), 3)
 
         return True
-
-    def get_result_instructions(self, tag_type_str: str, used_rel: bool) -> str:
-        if self.detailed_instructions:
-            return list_instructions(tag_type_str, used_rel)
-        else:
-            return simple_instructions(tag_type_str, used_rel)
 
     def calculate_bounding_box(self, nominatim_result):
         """
@@ -2790,16 +2656,21 @@ class OsmSearcher:
         if data or response.status_code == 200:
             if not data:
                 print("[OSM] No results found for lookup")
-                return []
+                return updated_things
 
-            addresses_by_id = {item['osm_id']: item for item in data}
+            addresses_by_id = {
+                f"{NOMINATIM_LOOKUP_TYPES.get(item.get('osm_type'))}{item.get('osm_id')}": item
+                for item in data
+            }
 
             for thing in things:
-                nominatim_result = addresses_by_id.get(thing['id'], {})
+                lookup = to_lookup(thing)
+                if lookup not in lookups:
+                    continue
+                nominatim_result = addresses_by_id.get(lookup, {})
                 if nominatim_result != {}:
                     updated = OsmSearcher.merge_from_nominatim(thing, nominatim_result)
                     if updated is not None:
-                        lookup = to_lookup(thing)
                         cache.set(lookup, updated, ttl=CACHE_TTL_PLACES)
                         updated_things.append(updated)
 
@@ -2807,7 +2678,7 @@ class OsmSearcher:
         else:
             await self.events.error(Exception(response.text))
             print(response.text)
-            return []
+            return updated_things
 
 
     async def nominatim_search(self, query, format="json", limit: int=1,
@@ -2890,7 +2761,7 @@ class OsmSearcher:
         or it can be a list of strings itself, which is treated as an
         AND query.
         """
-        print(f"[OSM] Searching Overpass ({api_host(self.overpass_turbo_url)}) around origin {place}")
+        print(f"[OSM] Searching for POIs around origin {place}")
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
@@ -2936,47 +2807,57 @@ class OsmSearcher:
             out center;
         """
 
-        print(query)
-        response = await asyncio.to_thread(self.overpass_get, query, headers, center=center)
-        if response.status_code == 200:
-            # nodes have have exact GPS coordinates. we also include
-            # useful way entries, post-processed to remove extra data
-            # and add a centered calculation of their GPS coords. any
-            # way that doesn't have enough info for us to use is
-            # dropped.
-            results = response.json()
-            results = results['elements'] if 'elements' in results else []
-            nodes = []
-            ways = []
-            things_missing_names = []
-
-            for res in results:
-                if 'type' not in res or not OsmUtils.thing_is_useful(res):
-                    continue
-                if res['type'] == 'node':
-                    if OsmUtils.thing_has_info(res):
-                        nodes.append(res)
-                    else:
-                        things_missing_names.append(res)
-                elif res['type'] in ('way', 'relation'):
-                    processed = OsmSearcher.process_way_result(res)
-                    if processed is not None and OsmUtils.thing_has_info(res):
-                        ways.append(processed)
-                    else:
-                        if processed is not None:
-                            things_missing_names.append(processed)
-
-            # attempt to update ways that have no names/addresses.
-            if len(things_missing_names) > 0:
-                print(f"[OSM] Updating {len(things_missing_names)} things with info")
-                for way_chunk in chunk_list(things_missing_names, 20):
-                    updated = await self.enrich_from_nominatim(way_chunk)
-                    ways = ways + updated
-
-            return nodes, ways
+        # Keyed by the query alone, not the instance: the query holds the
+        # tags, center and radius. Empty results aren't cached, since they
+        # can mean the place is outside an instance's map data.
+        cache = OsmCache()
+        cache_key = f"overpass_{hashlib.sha256(query.encode()).hexdigest()}"
+        results = cache.get(cache_key)
+        if results:
+            print("[OSM] Got Overpass results from cache!")
         else:
-            print(response.text)
-            raise Exception(f"Error calling Overpass API: {response.text}")
+            print(query)
+            response = await asyncio.to_thread(self.overpass_get, query, headers, center=center)
+            if response.status_code != 200:
+                print(response.text)
+                raise Exception(f"Error calling Overpass API: {response.text}")
+            results = response.json().get('elements', [])
+            if results:
+                cache.set(cache_key, results, ttl=CACHE_TTL_POIS)
+
+        # nodes have have exact GPS coordinates. we also include
+        # useful way entries, post-processed to remove extra data
+        # and add a centered calculation of their GPS coords. any
+        # way that doesn't have enough info for us to use is
+        # dropped.
+        nodes = []
+        ways = []
+        things_missing_names = []
+
+        for res in results:
+            if 'type' not in res or not OsmUtils.thing_is_useful(res):
+                continue
+            if res['type'] == 'node':
+                if OsmUtils.thing_has_info(res):
+                    nodes.append(res)
+                else:
+                    things_missing_names.append(res)
+            elif res['type'] in ('way', 'relation'):
+                processed = OsmSearcher.process_way_result(res)
+                if processed is not None and OsmUtils.thing_has_info(res):
+                    ways.append(processed)
+                else:
+                    if processed is not None:
+                        things_missing_names.append(processed)
+
+        # attempt to update ways that have no names/addresses.
+        if len(things_missing_names) > 0:
+            print(f"[OSM] Updating {len(things_missing_names)} things with info")
+            for way_chunk in chunk_list(things_missing_names, 20):
+                updated = await self.enrich_from_nominatim(way_chunk)
+                ways = ways + updated
+
+        return nodes, ways
 
 
     async def search_and_rank(
@@ -3089,7 +2970,7 @@ class OsmSearcher:
                 thing["citation_id"] = str(id + 1)
 
             if search_results:
-                result_instructions = self.get_result_instructions(tag_type_str, used_rel)
+                result_instructions = simple_instructions(tag_type_str, used_rel)
             else:
                 result_instructions = "No results found at all. Tell the user there are no results."
 
@@ -3122,34 +3003,15 @@ class OsmSearcher:
 
 
 async def do_osm_search(
-        valves, user_valves, place, tags,
+        valves, place, tags,
         category="POIs", event_emitter=None, limit=5, radius=4000,
         setting='urban', not_tag_groups={}, radius_multiplier=1,
 ):
-    # handle breaking 1.0 change, in case of old Nominatim valve settings.
-    if valves.nominatim_url.endswith("/search"):
-        message = "Old Nominatim URL setting still in use!"
-        print(f"[OSM] ERROR: {message}")
-        if valves.status_indicators and event_emitter is not None:
-            await event_emitter({
-                "type": "status",
-                "data": {
-                    "status": "error",
-                    "description": f"Error searching OpenStreetMap: {message}",
-                    "done": True,
-                },
-            })
-
-        return {
-            "instructions": OLD_VALVE_SETTING.replace("{OLD}", valves.nominatim_url),
-            "results": []
-        }
-
     print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place} ({setting} setting)")
     radius = radius * setting_to_multiplier(setting) * radius_multiplier
     events = OsmEventEmitter(event_emitter)
     readable_category=category.replace("_", " ")
-    searcher = OsmSearcher(valves, user_valves, events)
+    searcher = OsmSearcher(valves, events)
     search = await searcher.search_nearby(place=place, tags=tags, limit=limit, radius=radius,
                                           category=category, not_tag_groups=not_tag_groups,
                                           readable_category=readable_category)
@@ -3191,8 +3053,8 @@ class OsmLocality:
     CALM_ALONE = 0.60        # calm streets enough on their own
     SPEED_COVERAGE = 0.50    # speed limits must be mapped on this much to judge calm streets
 
-    def __init__(self, valves, user_valves, events: OsmEventEmitter):
-        self.searcher = OsmSearcher(valves, user_valves, events)
+    def __init__(self, valves, events: OsmEventEmitter):
+        self.searcher = OsmSearcher(valves, events)
         self.cache = OsmCache()
 
     def _street_query(self, lat: float, lon: float) -> str:
@@ -3403,10 +3265,9 @@ class OsmLocality:
 
 class OsmNavigator:
     def __init__(
-        self, valves, user_valves: Optional[dict], events: OsmEventEmitter,
+        self, valves, events: OsmEventEmitter,
     ):
         self.valves = valves
-        self.user_valves = user_valves
         self.events = events
         # Why the last route attempt failed (see try_route).
         self.failure = None
@@ -3459,7 +3320,7 @@ class OsmNavigator:
         the other mode, if one was compared.
         """
         distance = straight_line_distance(start, destination)
-        locality = OsmLocality(self.valves, self.user_valves, self.events)
+        locality = OsmLocality(self.valves, self.events)
         ends = [locality.describe(start), locality.describe(destination)]
         bike_friendly = self.combined_bike_friendly(ends)
 
@@ -3501,8 +3362,8 @@ class OsmNavigator:
         travel_mode: Optional[str] = None
     ):
         await self.events.navigating(done=False)
-        searcher = OsmSearcher(self.valves, self.user_valves, self.events)
-        router = OrsRouter(self.valves, self.user_valves, self.events)
+        searcher = OsmSearcher(self.valves, self.events)
+        router = OrsRouter(self.valves, self.events)
 
         try:
             if travel_mode:
@@ -3809,7 +3670,7 @@ def other_search_instructions(what: str, place: str) -> str:
         f"{NO_CITATION_LIST_PROHIBITION}"
     )
 
-async def resolve_setting(valves, user_valves, events, place: str,
+async def resolve_setting(valves, events, place: str,
                           setting: Optional[str]) -> str:
     """
     The urban setting for a search: the given one, or one derived from the
@@ -3819,7 +3680,7 @@ async def resolve_setting(valves, user_valves, events, place: str,
         return normalize_setting(setting)
 
     try:
-        locality = OsmLocality(valves, user_valves, events)
+        locality = OsmLocality(valves, events)
         result = await locality.searcher.nominatim_search(place, limit=1, quiet=True)
         stats = (await asyncio.to_thread(locality.street_stats,
                                          float(result[0]['lat']), float(result[0]['lon']))
@@ -3885,11 +3746,6 @@ class Tools:
             default=PUBLIC_OVERPASS_URL,
             description="URL of Overpass Turbo API for searching OpenStreetMap."
         )
-        instruction_oriented_interpretation: bool = Field(
-            default=True,
-            description=("Give detailed result interpretation instructions to the model. "
-                         "Switch this off if results are inconsistent, wrong, or missing.")
-        )
         ors_api_key: Optional[str] = Field(
             default=None,
             description=("Provide an Open Route Service API key to calculate "
@@ -3924,18 +3780,9 @@ class Tools:
         )
         pass
 
-    class UserValves(BaseModel):
-        instruction_oriented_interpretation: bool = Field(
-            default=True,
-            description=("Give detailed result interpretation instructions to the model. "
-                         "Switch this off if results are inconsistent, wrong, or missing.")
-        )
-        pass
-
 
     def __init__(self):
         self.valves = self.Valves()
-        self.user_valves = None
 
     async def find_place(
             self, place_or_coordinates: str, near: Optional[str] = None,
@@ -3955,7 +3802,7 @@ class Tools:
         query = f"{place_or_coordinates} {near}" if near else place_or_coordinates
         print(f"[OSM] Searching for info on [{query}].")
         events = OsmEventEmitter(__event_emitter__)
-        searcher = OsmSearcher(self.valves, self.user_valves, events)
+        searcher = OsmSearcher(self.valves, events)
 
         try:
             result = await searcher.nominatim_search(query, limit=5)
@@ -3999,7 +3846,7 @@ class Tools:
         """
         print(f"[OSM] Navigating from [{start_address_or_place}] to [{destination_address_or_place}] ({travel_mode or 'auto'}).")
         events = OsmEventEmitter(__event_emitter__)
-        navigator = OsmNavigator(self.valves, self.user_valves, events)
+        navigator = OsmNavigator(self.valves, events)
         return await navigator.navigate(
             start_address_or_place, destination_address_or_place, travel_mode
         )
@@ -4017,7 +3864,7 @@ class Tools:
         """
         print(f"[OSM] Getting locality info for [{place}].")
         events = OsmEventEmitter(__event_emitter__)
-        locality = OsmLocality(self.valves, self.user_valves, events)
+        locality = OsmLocality(self.valves, events)
 
         try:
             info = await locality.for_place(place)
@@ -4036,7 +3883,7 @@ class Tools:
             self, place: str, what: NearbyCategory,
             what_else: Optional[str] = None,
             setting: Optional[UrbanSetting] = None,
-            __user__: dict = None, __event_emitter__=None
+            __event_emitter__=None
     ) -> str:
         """
         Finds things of a given kind on OpenStreetMap near a place or address:
@@ -4050,8 +3897,6 @@ class Tools:
         :param setting: Optional: whether the place is urban, suburban, or rural (controls the search radius). Leave empty to determine it automatically.
         :return: A list of nearby places, if found.
         """
-        user_valves = (__user__ or {}).get("valves")
-
         if what == 'other':
             return await self._find_other_near_place(place, what_else, __event_emitter__)
 
@@ -4062,9 +3907,9 @@ class Tools:
         category, to_tags, radius, limit = search
         tags, not_tag_groups = to_tags(category)
         events = OsmEventEmitter(__event_emitter__)
-        setting = await resolve_setting(self.valves, user_valves, events, place, setting)
+        setting = await resolve_setting(self.valves, events, place, setting)
 
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category=category,
+        return await do_osm_search(valves=self.valves, category=category,
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
 
@@ -4086,7 +3931,7 @@ class Tools:
         query = f"{what} near {place}"
         print(f"[OSM] General search for [{query}].")
         events = OsmEventEmitter(__event_emitter__)
-        searcher = OsmSearcher(self.valves, self.user_valves, events)
+        searcher = OsmSearcher(self.valves, events)
 
         try:
             result = await searcher.nominatim_search(query, limit=10)
@@ -4115,7 +3960,7 @@ class Tools:
             denomination: DenominationCategory,
             is_common_for_area: bool,
             setting: Optional[UrbanSetting] = None,
-            __user__: dict = None, __event_emitter__=None
+            __event_emitter__=None
     ) -> str:
         """
         Finds places of worship (churches, mosques, temples, etc) on OpenStreetMap near a
@@ -4131,9 +3976,8 @@ class Tools:
         :param setting: Optional: whether the place is urban, suburban, or rural (controls the search radius). Leave empty to determine it automatically.
         :return: A list of nearby places of worship, if found.
         """
-        user_valves = (__user__ or {}).get("valves")
         events = OsmEventEmitter(__event_emitter__)
-        setting = await resolve_setting(self.valves, user_valves, events, place, setting)
+        setting = await resolve_setting(self.valves, events, place, setting)
 
         # by default, look for all places of worship.
         tags = ["amenity=place_of_worship"]
@@ -4159,14 +4003,14 @@ class Tools:
             tags = [["amenity=place_of_worship", f"religion={religion}", f"denomination={search_by_denom}"]]
 
         radius_multiplier = 1 if is_common_for_area else 2.5
-        return await do_osm_search(valves=self.valves, user_valves=user_valves, category="places of worship",
+        return await do_osm_search(valves=self.valves, category="places of worship",
                                    setting=setting, place=place, tags=tags, event_emitter=__event_emitter__,
                                    radius_multiplier=radius_multiplier)
 
     async def find_fuel_or_charging_by_category_near_place(
             self, place: str, category: FuelCategory, fuel_type: FuelTypeCategory,
             ev_charger_type: EVChargerCategory, setting: Optional[UrbanSetting] = None,
-            __user__: dict = None, __event_emitter__=None
+            __event_emitter__=None
     ) -> str:
         """
         Finds gas stations, petrol stations, fuel stations, or EV fast chargers near a given place or address.
@@ -4179,62 +4023,32 @@ class Tools:
         :param ev_charger_type: Type of EV charger to search for.
         :return: A list of nearby fueling stations, if found.
         """
-        # subfunction to find fuel
-        async def _find_fossil_fuel_near_place(valves, __user__: dict, place: str, setting: str, __event_emitter__) -> str:
-            setting = normalize_setting(setting)
-            user_valves = __user__["valves"] if "valves" in __user__ else None
-            tags = ["amenity=fuel"]
-            return await do_osm_search(valves=valves, user_valves=user_valves, category="fossil_fuels",
-                                       setting=setting, radius=10000, place=place, tags=tags,
-                                       event_emitter=__event_emitter__)
-
-        # subfunction to find EV fast chargers.
-        async def _find_ev_fast_chargers_near_place_with_type(
-                valves, __user__: dict, place: str, charger_type: str, setting: str, __event_emitter__
-        ) -> str:
-            setting = normalize_setting(setting)
-            user_valves = __user__["valves"] if "valves" in __user__ else None
-            charger_type = charger_type.lower().replace('"', "").replace("'", "")
-
-            # normally, search for any of the possible chargers.
-            tags = [f"socket:{charger}=\\.*" for charger in EV_CHARGER_OSM_SOCKET_TYPES]
-
-            # or, constrain search?
-            if charger_type != "all":
-                if charger_type not in EV_CHARGER_TOOL_INPUT_CHARGER_TYPES.keys():
-                    return {
-                        "results": [],
-                        "instructions": "There was an error searching due to an invalid charger type.",
-                        "error_message": f"{charger_type} is not a valid charger type."
-                    }
-
-                osm_socket_type = EV_CHARGER_TOOL_INPUT_CHARGER_TYPES[charger_type]
-                tags = [ f"socket:{osm_socket_type}=\\.*" ]
-
-            return await do_osm_search(valves=valves, user_valves=user_valves, category="ev_fast_charging",
-                                       setting=setting, radius=10000, place=place, tags=tags,
-                                       event_emitter=__event_emitter__)
-
-
-        # Main part of fuel search function
         allowed_categories = ["fossil_fuels", "ev_fast_charging"]
         validation_error = validate_category(category, allowed_categories)
-
         if validation_error:
             return validation_error
 
-        __user__ = __user__ or {}
-        events = OsmEventEmitter(__event_emitter__)
-        setting = await resolve_setting(self.valves, __user__.get("valves"), events, place, setting)
-
         if category == "fossil_fuels":
             print(f"[OSM] WARN: Currently ignoring fuel type parameter (was '{fuel_type}')")
-            return await _find_fossil_fuel_near_place(self.valves, __user__, place, setting, __event_emitter__)
-        elif category == "ev_fast_charging":
-            return await _find_ev_fast_chargers_near_place_with_type(
-                self.valves, __user__, place, ev_charger_type, setting, __event_emitter__
-            )
+            tags = ["amenity=fuel"]
+        else:
+            charger_type = ev_charger_type.lower().replace('"', "").replace("'", "")
+            if charger_type == "all":
+                tags = [f"socket:{charger}=\\.*" for charger in EV_CHARGER_OSM_SOCKET_TYPES]
+            elif charger_type in EV_CHARGER_TOOL_INPUT_CHARGER_TYPES:
+                tags = [f"socket:{EV_CHARGER_TOOL_INPUT_CHARGER_TYPES[charger_type]}=\\.*"]
+            else:
+                return {
+                    "results": [],
+                    "instructions": "There was an error searching due to an invalid charger type.",
+                    "error_message": f"{charger_type} is not a valid charger type."
+                }
 
+        events = OsmEventEmitter(__event_emitter__)
+        setting = await resolve_setting(self.valves, events, place, setting)
+        return await do_osm_search(valves=self.valves, category=category,
+                                   setting=setting, radius=10000, place=place, tags=tags,
+                                   event_emitter=__event_emitter__)
 
     def show_route_map(self, route_id: str):
         """
