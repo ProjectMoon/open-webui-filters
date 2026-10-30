@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 5.2.1
+version: 5.3.0
 license: AGPL-3.0+
 required_open_webui_version: 0.12.5
 requirements: openrouteservice, pygments
@@ -18,6 +18,10 @@ import requests
 import sqlite3
 import tempfile
 import time
+
+import contextvars
+import functools
+import secrets
 
 from contextlib import contextmanager
 
@@ -44,6 +48,52 @@ from urllib.parse import urljoin, urlparse
 from operator import itemgetter
 from typing import List, Optional, Tuple, Literal, TypeAlias
 from pydantic import BaseModel, Field
+
+#####################################################
+# Logging
+#####################################################
+
+# Each tool call gets a short ID in its log lines, so the lines of one
+# call can be picked out when calls run at the same time, and a trail of
+# the steps (see log_step) that led to the line, e.g.
+# "[OSM 3fa1 find_nearby > pois > overpass]". Context variables follow a
+# call into asyncio.to_thread.
+_log_call = contextvars.ContextVar('osm_log_call', default=None)
+_log_steps = contextvars.ContextVar('osm_log_steps', default=())
+
+def log(message: str):
+    call = _log_call.get()
+    trail = " > ".join(_log_steps.get())
+    prefix = " ".join(part for part in ("OSM", call, trail) if part)
+    print(f"[{prefix}] {message}")
+
+def log_call(tool: str, **args):
+    """Start the log of a tool call: a new ID, and the tool and its arguments."""
+    _log_call.set(secrets.token_hex(2))
+    _log_steps.set((tool,))
+    log(", ".join(f"{name}={value!r}" for name, value in args.items()))
+
+def log_step(name: str):
+    """Add name to the trail of the log lines of a function (sync or async)."""
+    def decorate(function):
+        if asyncio.iscoroutinefunction(function):
+            @functools.wraps(function)
+            async def wrapper(*args, **kwargs):
+                token = _log_steps.set(_log_steps.get() + (name,))
+                try:
+                    return await function(*args, **kwargs)
+                finally:
+                    _log_steps.reset(token)
+        else:
+            @functools.wraps(function)
+            def wrapper(*args, **kwargs):
+                token = _log_steps.set(_log_steps.get() + (name,))
+                try:
+                    return function(*args, **kwargs)
+                finally:
+                    _log_steps.reset(token)
+        return wrapper
+    return decorate
 
 #####################################################
 # Map UI Integration
@@ -1077,34 +1127,118 @@ def navigation_instructions(travel_type) -> str:
         f"the user that it's a **{travel_type}** route."
     )
 
-PUBLIC_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-PUBLIC_NOMINATIM_URL = "https://nominatim.openstreetmap.org/"
+# Public instances that can be ticked as fallbacks, in the order they're
+# tried. The first of each is the default main instance.
+PUBLIC_OVERPASS_INSTANCES = {
+    "https://overpass-api.de/api/interpreter": "overpass-api.de (FOSSGIS)",
+    "https://overpass.private.coffee/api/interpreter": "overpass.private.coffee",
+}
+PUBLIC_NOMINATIM_INSTANCES = {
+    "https://nominatim.openstreetmap.org/": "nominatim.openstreetmap.org (OSMF)",
+}
+PUBLIC_ORS_INSTANCES = {
+    "https://api.openrouteservice.org": "api.openrouteservice.org (HeiGIT, needs an API key)",
+}
+PUBLIC_OVERPASS_URL = next(iter(PUBLIC_OVERPASS_INSTANCES))
+PUBLIC_NOMINATIM_URL = next(iter(PUBLIC_NOMINATIM_INSTANCES))
+PUBLIC_ORS_URL = next(iter(PUBLIC_ORS_INSTANCES))
+
+def instance_urls(main: str, fallbacks: Optional[List[str]], public: dict,
+                  valve: str) -> Tuple[List[str], str]:
+    """
+    URLs to try in order: the main instance, then the ticked public
+    fallbacks (of any service: only those in `public` count) in the
+    order of `public`, skipping main's host. Also returns the log hint
+    for a custom main instance with no fallback.
+    """
+    ticked = set(fallbacks or [])
+    urls = [main] + [url for url in public
+                     if url in ticked and api_host(url) != api_host(main)]
+    custom = api_host(main) not in {api_host(url) for url in public}
+    hint = f" (no fallback: see {valve})" if custom and len(urls) == 1 else ""
+    return urls, hint
+
+# Every public instance, by service, for the public_fallbacks valve.
+PUBLIC_INSTANCES = {
+    "Overpass": PUBLIC_OVERPASS_INSTANCES,
+    "Nominatim": PUBLIC_NOMINATIM_INSTANCES,
+    "ORS": PUBLIC_ORS_INSTANCES,
+}
+
+def public_fallback_options() -> dict:
+    """Valve schema extra: one checkbox per public instance, by service."""
+    return {"input": {"type": "multiselect",
+                      "options": [{"value": url, "label": f"{service}: {label}"}
+                                  for service, instances in PUBLIC_INSTANCES.items()
+                                  for url, label in instances.items()]}}
 
 # Overpass request pacing. The tool keeps no state between calls, so the
 # Retry-After deadline per host lives in the cache file, and a lock file
-# makes concurrent tool calls (and processes) send one request at a time.
-OVERPASS_LOCK_FILE = os.path.join(tempfile.gettempdir(), "osm-overpass.lock")
+# per host makes concurrent tool calls (and processes) send one request at
+# a time to each host.
 OVERPASS_MAX_WAIT = 15        # seconds; longer waits fail (or fall back)
-OVERPASS_DEFAULT_BACKOFF = 10 # seconds, for a 429 without Retry-After
+OVERPASS_DEFAULT_BACKOFF = 10 # seconds, first wait when there's no Retry-After
+OVERPASS_MAX_BACKOFF = 300    # seconds; without Retry-After, waits double up to this
+OVERPASS_QUERY_TIMEOUT = 30   # seconds, asked of the server in [timeout:...]
+# Longer than the query timeout, which doesn't count time queued on the
+# server. A host that takes longer is treated as busy.
+OVERPASS_REQUEST_TIMEOUT = 75
+
+class OverpassIncomplete(Exception):
+    """
+    Overpass answered 200 but stopped the query (timeout, out of
+    memory): the elements are partial and must not be taken as the answer.
+    """
+    pass
+
+def overpass_runtime_error(response: requests.Response) -> Optional[str]:
+    """The runtime error remark of a 200 answer, if Overpass stopped the query."""
+    try:
+        remark = response.json().get('remark') or ''
+    except ValueError:
+        return None
+    return remark if 'runtime error' in remark else None
 
 class OverpassBusy(Exception):
-    """An Overpass host is rate limiting: ask again in retry_after seconds."""
-    def __init__(self, host: str, retry_after: float):
+    """An Overpass host is busy or rate limiting: ask again in retry_after seconds."""
+    def __init__(self, host: str, wait: float, hung: bool = False):
         self.host = host
-        self.retry_after = max(1, math.ceil(retry_after))
-        super().__init__(f"{host} is rate limiting: retry in {self.retry_after}s")
+        self.hung = hung  # timed out or unreachable, rather than answering busy
+        self.until = time.time() + wait
+        super().__init__(f"{host} is busy or rate limiting: retry in {math.ceil(wait)}s")
+
+    @property
+    def retry_after(self) -> int:
+        """Seconds left from now."""
+        return max(1, math.ceil(self.until - time.time()))
 
 class OverpassLock:
+    def __init__(self, host: str):
+        self.host = host
+        name = re.sub(r'[^A-Za-z0-9.-]', '_', host)
+        self.path = os.path.join(tempfile.gettempdir(), f"osm-overpass-{name}.lock")
+
     def __enter__(self):
-        self.file = open(OVERPASS_LOCK_FILE, 'w')
-        if fcntl:
+        self.file = open(self.path, 'w')
+        if not fcntl:
+            return self
+        try:
+            fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log(f"Waiting for another request to {self.host} to finish")
+            started = time.time()
             fcntl.flock(self.file, fcntl.LOCK_EX)
+            log(f"Waited {time.time() - started:.1f}s for another request to {self.host}")
         return self
 
     def __exit__(self, *exc):
         if fcntl:
             fcntl.flock(self.file, fcntl.LOCK_UN)
         self.file.close()
+
+def utc_clock(timestamp: float) -> str:
+    """A Unix time as HH:MM:SS UTC, for log lines."""
+    return datetime.fromtimestamp(timestamp, timezone.utc).strftime('%H:%M:%S UTC')
 
 def parse_retry_after(value: Optional[str]) -> Optional[float]:
     """Retry-After in seconds: either a number of seconds or an HTTP date."""
@@ -1120,42 +1254,83 @@ def parse_retry_after(value: Optional[str]) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
-def overpass_request(url: str, query: str, headers: dict, timeout: int) -> requests.Response:
+def overpass_request(url: str, query: str, headers: dict, timeout: int,
+                     max_wait: float = OVERPASS_MAX_WAIT) -> requests.Response:
     """
     Send one Overpass query, one request at a time across tool calls,
-    honoring Retry-After. A 429 (or a 503/504 with Retry-After) records
-    when the host may be asked again. Short waits are slept off and the
-    request is retried once; longer ones, or a second rate limit, raise
-    OverpassBusy.
+    honoring Retry-After. A 429/502/503/504, timeout or connection error
+    records when the host may be asked again; without Retry-After, the
+    wait doubles on each busy answer in a row. Waits up to max_wait are
+    slept off and the request is retried once; longer ones, a second
+    busy answer, a timeout or connection error raise OverpassBusy. A
+    200 with partial results (Overpass stopped the query) raises
+    OverpassIncomplete.
     """
     host = api_host(url)
     key = f"overpass_retry_after_{host}"
+    backoff_key = f"overpass_backoff_{host}"
 
-    with OverpassLock():
+    def mark_busy(why: str, retry_after: Optional[float] = None) -> float:
+        """Record when the host may be asked again; returns the wait."""
+        if retry_after is not None:
+            delay, reason = retry_after, "Retry-After"
+        else:
+            previous = OsmCache().get(backoff_key)
+            delay = (min(previous * 2, OVERPASS_MAX_BACKOFF) if previous
+                     else OVERPASS_DEFAULT_BACKOFF)
+            reason = "backoff, no Retry-After"
+            # Forgotten after a quiet spell, so the next busy answer
+            # starts from the default wait again.
+            OsmCache().set(backoff_key, delay, ttl=delay * 3)
+        OsmCache().set(key, time.time() + delay, ttl=delay)
+        log(f"{host} is busy ({why}): next request in {round(delay)}s, "
+              f"at {utc_clock(time.time() + delay)} ({reason})")
+        return delay
+
+    with OverpassLock(host):
         for attempt in range(2):
-            wait = (OsmCache().get(key) or 0) - time.time()
-            if wait > OVERPASS_MAX_WAIT:
+            until = OsmCache().get(key) or 0
+            wait = until - time.time()
+            if wait > max_wait:
+                log(f"{host} is busy until {utc_clock(until)} "
+                      f"({round(wait)}s left): not asking")
                 raise OverpassBusy(host, wait)
             if wait > 0:
-                print(f"[OSM] Waiting {round(wait)}s before asking {host} (Retry-After)")
+                log(f"Waiting {wait:.1f}s, until {utc_clock(until)}, "
+                      f"before asking {host} again")
                 time.sleep(wait)
+                log(f"Done waiting for {host}, asking again")
 
-            response = requests.get(url, params={"data": query}, headers=headers, timeout=timeout)
-            retry_after = parse_retry_after(response.headers.get('Retry-After'))
-            limited = (response.status_code == 429
-                       or (response.status_code in (503, 504) and retry_after is not None))
-            if not limited:
+            started = time.time()
+            try:
+                response = requests.get(url, params={"data": query}, headers=headers,
+                                        timeout=timeout)
+            except requests.exceptions.RequestException as e:
+                log(f"{host} failed after {time.time() - started:.1f}s: "
+                      f"{type(e).__name__}")
+                if isinstance(e, (requests.exceptions.Timeout,
+                                  requests.exceptions.ConnectionError)):
+                    raise OverpassBusy(host, mark_busy(type(e).__name__), hung=True)
+                raise
+            log(f"{host} answered HTTP {response.status_code} "
+                  f"in {time.time() - started:.1f}s")
+            if response.status_code not in (429, 502, 503, 504):
+                if OsmCache().get(backoff_key):
+                    OsmCache().delete(backoff_key)
+                    log(f"{host} answered (HTTP {response.status_code}): backoff reset")
+                error = overpass_runtime_error(response) if response.status_code == 200 else None
+                if error:
+                    log(f"{host} stopped the query: {error}")
+                    raise OverpassIncomplete(f"{host} stopped the query: {error}")
                 return response
 
-            delay = retry_after if retry_after is not None else OVERPASS_DEFAULT_BACKOFF
-            OsmCache().set(key, time.time() + delay, ttl=delay)
-            print(f"[OSM] {host} is rate limiting (HTTP {response.status_code}), "
-                  f"retry after {round(delay)}s")
+            delay = mark_busy(f"HTTP {response.status_code}",
+                              parse_retry_after(response.headers.get('Retry-After')))
 
         raise OverpassBusy(host, delay)
 
 def rate_limited(error: OverpassBusy) -> dict:
-    """Result for the model when Overpass is rate limiting: when to try again."""
+    """Result for the model when Overpass is busy: when to try again."""
     retry_at = datetime.fromtimestamp(time.time() + error.retry_after, timezone.utc)
     return {
         "results": [],
@@ -1163,7 +1338,7 @@ def rate_limited(error: OverpassBusy) -> dict:
         "retry_at": retry_at.isoformat(timespec='seconds'),
         "instructions": (
             f"No results: the OpenStreetMap data service ({error.host}) is "
-            f"rate limiting requests. Wait {error.retry_after} seconds (until "
+            f"busy or rate limiting requests. Wait {error.retry_after} seconds (until "
             f"{retry_at.strftime('%H:%M:%S')} UTC) before calling this tool, or "
             f"other tools that search for nearby places, again: calling sooner "
             f"fails the same way. Tell the user the service is busy and how long until it "
@@ -1239,14 +1414,10 @@ def simple_instructions(tag_type_str: str, used_rel: bool) -> str:
 #####################################################
 
 class OsmEventEmitter:
-    def __init__(self, event_emitter, status_indicators=True):
+    def __init__(self, event_emitter):
         self.event_emitter = event_emitter
-        self.status_indicators = status_indicators
 
     async def navigating(self, done: bool):
-        if not self.status_indicators:
-            return
-
         if done:
             message = "Navigation complete"
         else:
@@ -1262,9 +1433,6 @@ class OsmEventEmitter:
         })
 
     async def navigation_error(self, exception: Exception):
-        if not self.status_indicators:
-            return
-
         await self.event_emitter({
             "type": "status",
             "data": {
@@ -1275,9 +1443,6 @@ class OsmEventEmitter:
         })
 
     async def resolving(self, done: bool=False, message: Optional[str]=None, items=[]):
-        if not self.status_indicators:
-            return
-
         items = [
             {
                 "title": get_or_none(item, "display_name"),
@@ -1308,9 +1473,6 @@ class OsmEventEmitter:
         status: str="in_progress", done: bool=False,
         tags=[]
     ):
-        if not self.status_indicators:
-            return
-
         query = f"{category.capitalize()} POIs near {place}"
 
         await self.event_emitter({
@@ -1325,9 +1487,6 @@ class OsmEventEmitter:
         })
 
     async def search_complete(self, category: str, place: str, items=[], count=None):
-        if not self.status_indicators:
-            return
-
         num_results = len(items) if count is None else count
         citation_items = []
 
@@ -1385,9 +1544,6 @@ class OsmEventEmitter:
         })
 
     async def error(self, exception: Exception):
-        if not self.status_indicators:
-            return
-
         await self.event_emitter({
             "type": "status",
             "data": {
@@ -1948,8 +2104,6 @@ class OsmCache:
 #####################################################
 
 class OrsRouter:
-    PUBLIC_ORS_URL = "https://api.openrouteservice.org"
-
     # The public ORS has no status endpoint, but serves all of these.
     DEFAULT_PROFILES = set(ORS_PROFILES.values())
 
@@ -1967,33 +2121,22 @@ class OrsRouter:
         self.cache = OsmCache()
         self.events = events
 
-        # (base_url, api_key, client), tried in order. A custom instance
-        # comes first; the public one is a fallback if enabled.
+        # (base_url, api_key, client), tried in order: the main instance
+        # (custom, or the public one), then the ticked public fallbacks.
         self._instances = []
+        urls, self._fallback_hint = instance_urls(
+            valves.ors_instance or PUBLIC_ORS_URL,
+            getattr(valves, 'public_fallbacks', None), PUBLIC_ORS_INSTANCES, 'public_fallbacks')
         if valves.ors_api_key is not None and valves.ors_api_key != "":
-            if valves.ors_instance is not None:
-                client = openrouteservice.Client(
-                    base_url=valves.ors_instance,
-                    key=valves.ors_api_key,
-                    retry_over_query_limit=False
-                )
-                self._instances.append((valves.ors_instance, valves.ors_api_key, client))
-
-                # The fallback key if set, else the regular one (which may
-                # also be a real public ORS key).
-                fallback_key = getattr(valves, 'ors_fallback_api_key', None) or valves.ors_api_key
-                if getattr(valves, 'fallback_to_public_instances', False):
-                    client = openrouteservice.Client(key=fallback_key, retry_over_query_limit=False)
-                    self._instances.append((self.PUBLIC_ORS_URL, fallback_key, client))
-            else:
-                client = openrouteservice.Client(key=valves.ors_api_key, retry_over_query_limit=False)
-                self._instances.append((self.PUBLIC_ORS_URL, valves.ors_api_key, client))
+            # The public ORS uses the public key if set, else the regular one.
+            public_key = getattr(valves, 'ors_public_api_key', None) or valves.ors_api_key
+            for url in urls:
+                key = public_key if url in PUBLIC_ORS_INSTANCES else valves.ors_api_key
+                client = openrouteservice.Client(base_url=url, key=key,
+                                                 retry_over_query_limit=False)
+                self._instances.append((url, key, client))
 
         self._client = self._instances[0][2] if self._instances else None
-
-        custom_only = len(self._instances) == 1 and valves.ors_instance is not None
-        self._fallback_hint = (" (public fallback is off: see fallback_to_public_instances)"
-                               if custom_only else "")
 
     def _fetch_profiles(self, base_url: str, api_key: str) -> Tuple[set, bool]:
         """
@@ -2002,7 +2145,7 @@ class OrsRouter:
         a status endpoint (the public ORS) get the default profiles.
         """
         url = f"{base_url.rstrip('/')}/v2/status"
-        print(f"[OSM] Getting ORS profiles from {api_host(url)}")
+        log(f"Getting ORS profiles from {api_host(url)}")
         try:
             resp = requests.get(url, headers={"Authorization": api_key}, timeout=10)
             if resp.status_code == 404:
@@ -2020,7 +2163,7 @@ class OrsRouter:
 
             return found, True
         except Exception as e:
-            print(f"[OSM] Could not get ORS profiles, assuming defaults: {e}")
+            log(f"Could not get ORS profiles, assuming defaults: {e}")
             return set(self.DEFAULT_PROFILES), False
 
     def _profiles(self, base_url: str, api_key: str) -> set:
@@ -2095,6 +2238,7 @@ class OrsRouter:
     ) -> bool:
         return bike_minutes <= car_minutes * self.BIKE_TIME_FACTOR[bike_friendly]
 
+    @log_step("route")
     def calculate_route(
         self, from_thing: dict, to_thing: dict, mode: str
     ) -> Optional[Tuple[dict, str]]:
@@ -2116,7 +2260,7 @@ class OrsRouter:
         cache_key = f"ors_route_{mode}_{str(coords)}"
         cached_route = self.cache.get(cache_key)
         if cached_route:
-            print("[OSM] Got route from cache!")
+            log("Got route from cache!")
             return cached_route, mode
 
         profile = ORS_PROFILES[mode]
@@ -2125,12 +2269,12 @@ class OrsRouter:
             if profile not in self._profiles(base_url, api_key):
                 continue
 
-            print(f"[OSM] Routing via ORS ({api_host(base_url)}), profile {profile}")
+            log(f"Routing via ORS ({api_host(base_url)}), profile {profile}")
             try:
                 resp = ors_directions(client, coords, profile=profile,
                                       preference="fastest", units="km")
             except Exception as e:
-                print(f"[OSM] ORS error from {api_host(base_url)}: {e}{self._fallback_hint}")
+                log(f"ORS error from {api_host(base_url)}: {e}{self._fallback_hint}")
                 error = e
                 continue
 
@@ -2138,7 +2282,7 @@ class OrsRouter:
             if len(routes) > 0:
                 self.cache.set(cache_key, routes[0], ttl=CACHE_TTL_ROUTES)
                 return routes[0], mode
-            print(f"[OSM] No route from {api_host(base_url)}{self._fallback_hint}")
+            log(f"No route from {api_host(base_url)}{self._fallback_hint}")
 
         if error:
             raise error
@@ -2185,6 +2329,7 @@ class OrsRouter:
 
         return distances
 
+    @log_step("matrix")
     def _matrix_for_mode(self, origin: dict, things: List[dict], mode: str) -> dict:
         """
         {thing id: (distance km, duration s)} for one mode. Things an
@@ -2198,13 +2343,17 @@ class OrsRouter:
             if profile not in self._profiles(base_url, api_key):
                 continue
 
-            print(f"[OSM] Distance matrix via ORS ({api_host(base_url)}), "
+            log(f"Distance matrix via ORS ({api_host(base_url)}), "
                   f"profile {profile}, {len(things)} destinations")
             try:
-                results.update(self._matrix_distances(client, origin, things, profile))
+                routed = self._matrix_distances(client, origin, things, profile)
             except Exception as e:
-                print(f"[OSM] ORS matrix error from {api_host(base_url)}: {e}{self._fallback_hint}")
+                log(f"ORS matrix error from {api_host(base_url)}: {e}{self._fallback_hint}")
                 continue
+
+            log(f"{api_host(base_url)} routed {len(routed)} of {len(things)}"
+                f"{self._fallback_hint if len(routed) < len(things) else ''}")
+            results.update(routed)
 
             things = [thing for thing in things if thing['id'] not in results]
 
@@ -2230,7 +2379,7 @@ class OrsRouter:
                 if attempt > 0 or not match:
                     raise
                 bad = {int(index) for index in match.group(1).split(',')}
-                print(f"[OSM] {len(bad)} destination(s) outside the ORS map, retrying without them")
+                log(f"{len(bad)} destination(s) outside the ORS map, retrying without them")
                 things = [thing for index, thing in enumerate(things) if index not in bad]
                 if not things:
                     return {}
@@ -2257,7 +2406,7 @@ class OsmSearcher:
         # config settings
         self.nominatim_url = valves.nominatim_url
         self.overpass_turbo_url = valves.overpass_turbo_url
-        self.fallback_to_public = getattr(valves, 'fallback_to_public_instances', False)
+        self.public_fallbacks = getattr(valves, 'public_fallbacks', None)
         self.user_agent = valves.user_agent
         self.from_header = valves.from_header
         self.include_raw_data = valves.include_raw_osm_data
@@ -2411,13 +2560,18 @@ class OsmSearcher:
     # Coverage checks are cached per ~1 km grid cell for this long.
     COVERAGE_CACHE_SECONDS = 30 * 24 * 3600
 
+    @log_step("coverage")
     def overpass_covers(self, url: str, center: dict, headers: dict) -> bool:
         """
         Whether an Overpass instance has map data around a point, judged
         by any roads within 1 km. Self-hosted instances often hold only a
         regional extract, so an empty search result can mean "outside my
         map" rather than "nothing there". On errors, assume it's covered.
+        The built-in public instances have worldwide data.
         """
+        if url in PUBLIC_OVERPASS_INSTANCES:
+            return True
+
         lat, lon = float(center['lat']), float(center['lon'])
         cache_key = f"overpass_coverage_{api_host(url)}_{round(lat, 2)}_{round(lon, 2)}"
         cache = OsmCache()
@@ -2426,82 +2580,118 @@ class OsmSearcher:
             return cached
 
         query = f"[out:json][timeout:25];way[highway](around:1000,{lat},{lon});out count;"
-        print(f"[OSM] Checking whether {api_host(url)} has data around {lat},{lon}")
+        log(f"Checking whether {api_host(url)} has data around {lat},{lon}")
         try:
             response = overpass_request(url, query, headers, timeout=30)
             response.raise_for_status()
             elements = response.json().get('elements') or [{}]
             covered = int(elements[0].get('tags', {}).get('ways', 0)) > 0
         except Exception as e:
-            print(f"[OSM] Coverage check failed, assuming covered: {e}")
+            log(f"Coverage check failed, assuming covered: {e}")
             return True
 
         cache.set(cache_key, covered, ttl=self.COVERAGE_CACHE_SECONDS)
         return covered
 
+    @log_step("overpass")
     def overpass_get(
         self, query: str, headers: dict, has_data=None, center: Optional[dict] = None
     ) -> requests.Response:
         """
-        Run an Overpass query. With public fallback on and a custom
-        instance, retry on the public instance if the custom one returns an
-        error, or returns nothing for a place (center) outside its map
-        data. An empty result inside its map is a real "nothing there".
+        Run an Overpass query on the main instance, then on the ticked
+        public fallbacks, moving on when an instance errors, is busy, or
+        returns nothing for a place (center) outside its map data. An
+        empty result from an instance with map data there is a real
+        "nothing there". Busy instances are asked once more at the end,
+        when their wait may be over (not hung ones: that would mean
+        another timeout). An empty result is only returned if
+        no instance failed; otherwise the failure is raised (the shortest
+        wait, if any were busy), or a non-200 answer returned.
         """
         if has_data is None:
             has_data = lambda result: len(result.get('elements', [])) > 0
 
-        urls = [self.overpass_turbo_url]
-        if self.fallback_to_public and self.overpass_turbo_url != PUBLIC_OVERPASS_URL:
-            urls.append(PUBLIC_OVERPASS_URL)
+        urls, fallback_hint = instance_urls(self.overpass_turbo_url, self.public_fallbacks,
+                                            PUBLIC_OVERPASS_INSTANCES, 'public_fallbacks')
 
-        if len(urls) == 1 and self.overpass_turbo_url != PUBLIC_OVERPASS_URL:
-            fallback_hint = " (public fallback is off: see fallback_to_public_instances)"
-        else:
-            fallback_hint = ""
+        # Per instance that couldn't answer: its exception or non-200 answer.
+        failures = {}
+        empty = None
 
-        response, error = None, None
-        for index, url in enumerate(urls):
-            print(f"[OSM] Overpass query via {api_host(url)}")
+        def ask(url: str, max_wait: float) -> Tuple[Optional[requests.Response], bool]:
+            """The 200 answer (None if it failed), and whether it has data."""
+            nonlocal empty
+            host = api_host(url)
+            log(f"Overpass query via {host}")
             try:
-                response = overpass_request(url, query, headers, timeout=90)
-                if response.status_code == 200 and has_data(response.json()):
-                    return response
-                print(f"[OSM] No data from {api_host(url)} (HTTP {response.status_code})"
-                      f"{fallback_hint}")
+                response = overpass_request(url, query, headers,
+                                            timeout=OVERPASS_REQUEST_TIMEOUT, max_wait=max_wait)
             except Exception as e:
-                print(f"[OSM] Overpass error from {api_host(url)}: {e}{fallback_hint}")
-                error = e
-                continue
+                log(f"Overpass error from {host}: {e}{fallback_hint}")
+                failures[url] = e
+                return None, False
+            if response.status_code != 200:
+                log(f"Overpass error from {host} (HTTP {response.status_code}){fallback_hint}")
+                failures[url] = response
+                return None, False
 
+            failures.pop(url, None)
+            if has_data(response.json()):
+                return response, True
+            log(f"No data from {host}{fallback_hint}")
+            empty = response
+            return response, False
+
+        def covers(url: str, response: Optional[requests.Response], is_last: bool) -> bool:
+            # Whether an empty answer is the real answer. Not worth asking
+            # the last instance when nothing failed: there's nothing else.
+            return (response is not None and center is not None
+                    and (not is_last or failures)
+                    and self.overpass_covers(url, center, headers))
+
+        for index, url in enumerate(urls):
             is_last = index == len(urls) - 1
-            if (not is_last and response.status_code == 200 and center is not None
-                    and self.overpass_covers(url, center, headers)):
-                print(f"[OSM] {api_host(url)} has map data here: no results is the answer")
+            # Don't wait for a busy host while another one is left.
+            response, found = ask(url, OVERPASS_MAX_WAIT if is_last else 0)
+            if found:
+                return response
+            if covers(url, response, is_last):
+                log(f"{api_host(url)} has map data here: no results is the answer")
                 return response
 
-        if response is None:
-            raise error
-        return response
+        busy = [url for url in urls
+                if isinstance(failures.get(url), OverpassBusy) and not failures[url].hung]
+        for url in busy:
+            log(f"Asking {api_host(url)} again, as no other instance answered")
+            response, found = ask(url, OVERPASS_MAX_WAIT)
+            if found:
+                return response
+            if covers(url, response, url == urls[-1]):
+                log(f"{api_host(url)} has map data here: no results is the answer")
+                return response
+
+        if not failures:
+            return empty
+
+        busy = [failure for failure in failures.values() if isinstance(failure, OverpassBusy)]
+        if busy:
+            # A wait from a host that said it's busy beats one from a hung host.
+            answered = [failure for failure in busy if not failure.hung]
+            raise min(answered or busy, key=lambda e: e.until)
+        failure = list(failures.values())[-1]
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
 
     def nominatim_urls(self, endpoint: str) -> (List[str], str):
         """
         Nominatim URLs for an endpoint, in the order to try them: the
-        configured instance, then the public one if fallback is on and
-        the configured one is custom. Also returns the log hint for when
-        fallback is off.
+        configured instance, then the ticked public fallbacks. Also
+        returns the log hint for a custom instance with no fallback.
         """
-        custom = api_host(self.nominatim_url) != api_host(PUBLIC_NOMINATIM_URL)
-        urls = [urljoin(self.nominatim_url, endpoint)]
-        if custom and self.fallback_to_public:
-            urls.append(urljoin(PUBLIC_NOMINATIM_URL, endpoint))
-
-        if custom and not self.fallback_to_public:
-            fallback_hint = " (public fallback is off: see fallback_to_public_instances)"
-        else:
-            fallback_hint = ""
-
-        return urls, fallback_hint
+        urls, fallback_hint = instance_urls(self.nominatim_url, self.public_fallbacks,
+                                            PUBLIC_NOMINATIM_INSTANCES, 'public_fallbacks')
+        return [urljoin(url, endpoint) for url in urls], fallback_hint
 
     def create_headers(self) -> Optional[dict]:
         if len(self.user_agent) == 0 or len(self.from_header) == 0:
@@ -2512,6 +2702,7 @@ class OsmSearcher:
             'From': self.from_header
         }
 
+    @log_step("distances")
     def add_nav_distance_to_things(self, origin, things_nearby: List[dict]) -> bool:
         """
         Update distances to use ORS navigable distances, if ORS enabled.
@@ -2529,7 +2720,7 @@ class OsmSearcher:
         for thing in things_nearby:
             cached = cache.get(cache_key(thing))
             if cached:
-                print(f"[OSM] Got nav distance for {thing['id']} from cache!")
+                log(f"Got nav distance for {thing['id']} from cache!")
                 nav_distances[thing['id']] = cached
             else:
                 uncached.append(thing)
@@ -2542,7 +2733,7 @@ class OsmSearcher:
                 bike_friendly = locality.describe(place)['bike_friendly']
                 found = self._ors.calculate_distances(origin, uncached, bike_friendly)
             except Exception as e:
-                print(f"[OSM] Error querying ORS: {e}")
+                log(f"Error querying ORS: {e}")
                 found = {}
 
             for thing in uncached:
@@ -2555,7 +2746,7 @@ class OsmSearcher:
 
         for thing in things_nearby:
             if thing['id'] not in nav_distances:
-                print(f"[OSM] No route to {thing['id']}, using straight-line distance")
+                log(f"No route to {thing['id']}, using straight-line distance")
             thing['nav_distance'] = round(nav_distances.get(thing['id'], thing['distance']), 3)
 
         return True
@@ -2581,7 +2772,7 @@ class OsmSearcher:
             rel_lat = nominatim_result.get("lat", None)
             rel_lon = nominatim_result.get("lon", None)
             if rel_lat and rel_lon:
-                print("[OSM] Requested search area is settled urban zone. Using lat/lon of OSM relation.")
+                log("Requested search area is settled urban zone. Using lat/lon of OSM relation.")
                 return True, {
                     'minlat': rel_lat,
                     'maxlat': rel_lat,
@@ -2597,6 +2788,7 @@ class OsmSearcher:
             'maxlon': nominatim_result['boundingbox'][3]
         }
 
+    @log_step("nominatim lookup")
     async def enrich_from_nominatim(self, things, format="json"):
         """
         Enrich search results missing data with extra info from
@@ -2629,10 +2821,10 @@ class OsmSearcher:
         lookups = [id for id in lookups if id not in lookups_to_remove]
 
         if len(lookups) == 0:
-            print("[OSM] Got all Nominatim info from cache!")
+            log("Got all Nominatim info from cache!")
             return updated_things
         else:
-            print(f"[OSM] Looking up {len(lookups)} things from Nominatim")
+            log(f"Looking up {len(lookups)} things from Nominatim")
 
         headers = self.create_headers()
         if not headers:
@@ -2644,7 +2836,7 @@ class OsmSearcher:
         data, remaining = [], lookups
         response, error = None, None
         for url in urls:
-            print(f"[OSM] Nominatim lookup of {len(remaining)} things via {api_host(url)}")
+            log(f"Nominatim lookup of {len(remaining)} things via {api_host(url)}")
             params = {
                 'osm_ids': ",".join(remaining),
                 'format': format
@@ -2653,12 +2845,12 @@ class OsmSearcher:
             try:
                 response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
             except Exception as e:
-                print(f"[OSM] Nominatim error from {api_host(url)}: {e}{fallback_hint}")
+                log(f"Nominatim error from {api_host(url)}: {e}{fallback_hint}")
                 error = e
                 continue
 
             if response.status_code != 200:
-                print(f"[OSM] Nominatim error from {api_host(url)} (HTTP {response.status_code})"
+                log(f"Nominatim error from {api_host(url)} (HTTP {response.status_code})"
                       f"{fallback_hint}")
                 continue
 
@@ -2669,14 +2861,14 @@ class OsmSearcher:
             remaining = [id for id in remaining if id not in found_ids]
             if len(remaining) == 0:
                 break
-            print(f"[OSM] {len(remaining)} things not found on {api_host(url)}{fallback_hint}")
+            log(f"{len(remaining)} things not found on {api_host(url)}{fallback_hint}")
 
         if response is None:
             raise error
 
         if data or response.status_code == 200:
             if not data:
-                print("[OSM] No results found for lookup")
+                log("No results found for lookup")
                 return updated_things
 
             addresses_by_id = {
@@ -2698,10 +2890,11 @@ class OsmSearcher:
             return updated_things
         else:
             await self.events.error(Exception(response.text))
-            print(response.text)
+            log(f"Error response: {response.text[:200]}")
             return updated_things
 
 
+    @log_step("nominatim")
     async def nominatim_search(self, query, format="json", limit: int=1,
                                quiet: bool=False) -> Optional[dict]:
         normalized_query = " ".join(query.lower().split())
@@ -2710,7 +2903,7 @@ class OsmSearcher:
         data = cache.get(cache_key)
 
         if data:
-            print(f"[OSM] Got nominatim search data for {query} from cache!")
+            log(f"Got nominatim search data for {query} from cache!")
             if not quiet:
                 await self.events.resolving(done=True, message=query, items=data[:limit])
             return data[:limit]
@@ -2736,17 +2929,17 @@ class OsmSearcher:
         urls, fallback_hint = self.nominatim_urls("search")
         response, error = None, None
         for url in urls:
-            print(f"[OSM] Searching Nominatim ({api_host(url)}) for: {query}")
+            log(f"Searching Nominatim ({api_host(url)}) for: {query}")
             try:
                 response = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=30)
             except Exception as e:
-                print(f"[OSM] Nominatim error from {api_host(url)}: {e}{fallback_hint}")
+                log(f"Nominatim error from {api_host(url)}: {e}{fallback_hint}")
                 error = e
                 continue
 
             if response.status_code == 200 and response.json():
                 break
-            print(f"[OSM] No results from {api_host(url)} (HTTP {response.status_code})"
+            log(f"No results from {api_host(url)} (HTTP {response.status_code})"
                   f"{fallback_hint}")
 
         if response is None:
@@ -2761,16 +2954,18 @@ class OsmSearcher:
             if not quiet:
                 await self.events.resolving(done=True, message=query, items=data[:limit])
 
-            print(f"[OSM] Got result from Nominatim for: {query}")
+            log(f"Got result from Nominatim for: {query}")
             cache.set(cache_key, data[:limit], ttl=CACHE_TTL_PLACES)
             return data[:limit]
         else:
             await self.events.error(Exception(response.text))
-            print(response.text)
+            log(f"Error response: {response.text[:200]}")
             return None
 
+    @log_step("pois")
     async def search_osm(
-            self, place, tags, bbox, limit=5, radius=4000, not_tag_groups={}
+            self, place, tags, bbox, limit=5, radius=4000, not_tag_groups={},
+            setting: Optional[str] = None
     ) -> (List[dict], List[dict]):
         """
         Return a list relevant of OSM nodes and ways. Some
@@ -2781,14 +2976,19 @@ class OsmSearcher:
         in the tag list can be a string (basic search for "this tag"),
         or it can be a list of strings itself, which is treated as an
         AND query.
+
+        The radius is scaled by the setting (urban, suburban, rural):
+        the given one, or one from the street stats around the center.
+        Without cached street stats, they're fetched in the same query
+        (see _search_with_street_stats).
         """
-        print(f"[OSM] Searching for POIs around origin {place}")
+        log(f"Searching for POIs around origin {place}")
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
 
         center = OsmUtils.get_bounding_box_center(bbox)
-        around = f"(around:{radius},{center['lat']},{center['lon']})"
+        lat, lon = float(center['lat']), float(center['lon'])
 
         tag_groups, and_queries = OsmSearcher.group_tags(tags)
 
@@ -2807,44 +3007,66 @@ class OsmSearcher:
 
         not_search_query = "".join([f"[{query}]" for query in not_search_groups])
 
-        searches = []
-        for search_group in search_groups:
-            searches.append(f'nwr[{search_group}]{not_search_query}{around}')
+        filters = ([f'nwr[{search_group}]{not_search_query}' for search_group in search_groups]
+                   + [f'nwr{and_group}{not_search_query}' for and_group in and_groups])
 
-        for and_group in and_groups:
-            searches.append(f'nwr{and_group}{not_search_query}{around}')
+        def query_summary(setting: Optional[str]) -> str:
+            """The query in one line, for the log."""
+            settings = [setting] if setting else ['urban', 'suburban', 'rural']
+            within = "/".join(f"{radius * setting_to_multiplier(s):g}" for s in settings)
+            chosen = setting or "urban/suburban/rural by road count"
+            return f"{' | '.join(filters)} within {within} m ({chosen}) of {lat},{lon}"
 
-        search = ";\n".join(searches)
-        if len(search) > 0:
-            search += ";"
+        def pois(setting: str) -> str:
+            """The POI statements for a setting's radius."""
+            around = f"(around:{radius * setting_to_multiplier(setting)},{lat},{lon})"
+            search = ";\n".join(f"{search_filter}{around}" for search_filter in filters)
+            if len(search) > 0:
+                search += ";"
 
-        # "out center" gives ways and relations (areas) one coordinate,
-        # the center of their bounding box, without their full geometry.
-        query = f"""
-            [out:json];
+            # "out center" gives ways and relations (areas) one coordinate,
+            # the center of their bounding box, without their full geometry.
+            return f"""
             (
                 {search}
             );
             out center;
-        """
+            """
+
+        def poi_query(setting: str) -> str:
+            return f"[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];{pois(setting)}"
 
         # Keyed by the query alone, not the instance: the query holds the
         # tags, center and radius. Empty results aren't cached, since they
         # can mean the place is outside an instance's map data.
         cache = OsmCache()
-        cache_key = f"overpass_{hashlib.sha256(query.encode()).hexdigest()}"
-        results = cache.get(cache_key)
+        cache_key = lambda setting: (
+            f"overpass_{hashlib.sha256(poi_query(setting).encode()).hexdigest()}")
+
+        stats = OsmLocality.cached_stats(lat, lon)
+        if not setting and stats:
+            setting = OsmLocality.setting(stats)
+            log(f"Setting for {place}: {setting} ({stats['roads']} roads nearby)")
+
+        results = cache.get(cache_key(setting)) if setting else None
         if results:
-            print("[OSM] Got Overpass results from cache!")
+            log("Got Overpass results from cache!")
+        elif stats is None:
+            log(f"Overpass query with street stats: {query_summary(setting)}")
+            results, setting = await asyncio.to_thread(
+                self._search_with_street_stats, place, lat, lon, setting, pois, headers)
+            if results:
+                cache.set(cache_key(setting), results, ttl=CACHE_TTL_POIS)
         else:
-            print(query)
+            query = poi_query(setting)
+            log(f"Overpass query: {query_summary(setting)}")
             response = await asyncio.to_thread(self.overpass_get, query, headers, center=center)
             if response.status_code != 200:
-                print(response.text)
+                log(f"Error response: {response.text[:200]}")
                 raise Exception(f"Error calling Overpass API: {response.text}")
             results = response.json().get('elements', [])
             if results:
-                cache.set(cache_key, results, ttl=CACHE_TTL_POIS)
+                cache.set(cache_key(setting), results, ttl=CACHE_TTL_POIS)
 
         # nodes have have exact GPS coordinates. we also include
         # useful way entries, post-processed to remove extra data
@@ -2873,7 +3095,7 @@ class OsmSearcher:
 
         # attempt to update ways that have no names/addresses.
         if len(things_missing_names) > 0:
-            print(f"[OSM] Updating {len(things_missing_names)} things with info")
+            log(f"Updating {len(things_missing_names)} things with info")
             for way_chunk in chunk_list(things_missing_names, 20):
                 updated = await self.enrich_from_nominatim(way_chunk)
                 ways = ways + updated
@@ -2881,16 +3103,56 @@ class OsmSearcher:
         return nodes, ways
 
 
+    def _search_with_street_stats(
+            self, place, lat: float, lon: float, setting: Optional[str], pois, headers: dict
+    ) -> Tuple[List[dict], str]:
+        """
+        One Overpass query for the street stats around a point and the
+        POIs (statements from pois(setting)). Without a given setting,
+        the query picks the radius from the road count, with the same
+        thresholds as OsmLocality.setting. Caches the stats and returns
+        the POIs and the setting. No roads means no map data there, so
+        the next instance is tried.
+        """
+        if setting:
+            search = pois(setting)
+        else:
+            count = "roads.count(ways)"
+            search = f"""
+            if ({count} >= {OsmLocality.URBAN_ROADS}) {{ {pois('urban')} }}
+            else {{ if ({count} >= {OsmLocality.SUBURBAN_ROADS}) {{ {pois('suburban')} }}
+                   else {{ {pois('rural')} }} }}
+            """
+
+        query = (f"[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];"
+                 f"{OsmLocality.street_statements(lat, lon)}{search}")
+        response = self.overpass_get(query, headers, OsmLocality.has_roads)
+        if response.status_code != 200:
+            log(f"Error response: {response.text[:200]}")
+            raise Exception(f"Error calling Overpass API: {response.text}")
+
+        elements = response.json().get('elements', [])
+        stats = OsmLocality.store_stats(lat, lon, elements)
+        if not setting:
+            # The same choice the query made (rural if no roads at all).
+            setting = OsmLocality.setting(stats) if stats else 'rural'
+            log(f"Setting for {place}: {setting} "
+                  f"({stats['roads'] if stats else 0} roads nearby)")
+
+        results = [element for element in elements
+                   if element.get('type') in ('node', 'way', 'relation')]
+        return results, setting
+
     async def search_and_rank(
             self, nominatim_result, place, tags,
-            bbox, limit, radius, not_tag_groups):
+            bbox, limit, radius, not_tag_groups, setting=None):
         """
         Search OpenStreetMap and sort results according to
         distance and relevance to the query.
         """
         # initial OSM search
         nodes, ways = await self.search_osm(
-            place, tags, bbox, limit, radius, not_tag_groups
+            place, tags, bbox, limit, radius, not_tag_groups, setting
         )
 
         # use results from the initial search, but if they do not
@@ -2923,7 +3185,8 @@ class OsmSearcher:
 
     async def search_nearby(
             self, place: str, tags: List[str], category: str, limit: int=5,
-            radius: int=4000, not_tag_groups={}, readable_category: str = "POIs"
+            radius: int=4000, not_tag_groups={}, readable_category: str = "POIs",
+            setting: Optional[str] = None
     ) -> dict:
         """
         Main entrypoint into the searching logic. Checks header
@@ -2959,24 +3222,24 @@ class OsmSearcher:
                 else:
                     place_display_name = place
             else:
-                print(f"[OSM] WARN: Could not find display name for place: {place}")
+                log(f"WARN: Could not find display name for place: {place}")
                 place_display_name = place
 
             await self.events.searching(readable_category, place_display_name, done=False, tags=tags)
 
             used_rel, bbox = self.calculate_bounding_box(nominatim_result)
 
-            print(f"[OSM] Searching for {readable_category} near {place_display_name}")
+            log(f"Searching for {readable_category} near {place_display_name}")
             things_nearby, sort_method = await self.search_and_rank(
                 nominatim_result, place, tags,
-                bbox, limit, radius, not_tag_groups
+                bbox, limit, radius, not_tag_groups, setting
             )
 
             if not things_nearby or len(things_nearby) == 0:
                 await self.events.search_complete(readable_category, place_display_name, [])
                 return { "place_display_name": place, "results": NO_RESULTS }
 
-            print(f"[OSM] Found {len(things_nearby)} {readable_category} results near {place_display_name}")
+            log(f"Found {len(things_nearby)} {readable_category} results near {place_display_name}")
 
             tag_type_str = ", ".join(OsmSearcher.flatten_tags(tags))
 
@@ -3013,11 +3276,11 @@ class OsmSearcher:
             await self.events.search_complete(readable_category, place_display_name, [])
             return { "place_display_name": place_display_name, "results": NO_RESULTS, "things": [] }
         except OverpassBusy as e:
-            print(e)
+            log(f"Error: {e}")
             await self.events.error(e)
             return { "place_display_name": place_display_name, "results": rate_limited(e), "things": [] }
         except Exception as e:
-            print(e)
+            log(f"Error: {e}")
             await self.events.error(e)
             instructions = (f"No results were found, because of an error. "
                             f"Tell the user that there was an error finding results. "
@@ -3030,16 +3293,21 @@ class OsmSearcher:
 async def do_osm_search(
         valves, place, tags,
         category="POIs", event_emitter=None, limit=5, radius=4000,
-        setting='urban', not_tag_groups={}, radius_multiplier=1,
+        setting=None, not_tag_groups={}, radius_multiplier=1,
 ):
-    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place} ({setting} setting)")
-    radius = radius * setting_to_multiplier(setting) * radius_multiplier
+    """
+    Search for things near a place. The radius is scaled by the setting
+    (urban, suburban, rural), determined from the street stats if None.
+    """
+    log(f"Searching for [{category}] ({tags[0]}, etc) near place: {place} "
+          f"({setting or 'automatic'} setting)")
+    radius = radius * radius_multiplier
     events = OsmEventEmitter(event_emitter)
     readable_category=category.replace("_", " ")
     searcher = OsmSearcher(valves, events)
     search = await searcher.search_nearby(place=place, tags=tags, limit=limit, radius=radius,
                                           category=category, not_tag_groups=not_tag_groups,
-                                          readable_category=readable_category)
+                                          readable_category=readable_category, setting=setting)
 
     # move place display name to top level results returned to client.
     place_display_name = search.get("place_display_name", None)
@@ -3082,8 +3350,41 @@ class OsmLocality:
         self.searcher = OsmSearcher(valves, events)
         self.cache = OsmCache()
 
+    # Road counts within RADIUS from which a place is urban or suburban
+    # (fewer is rural). They pick the radius of nearby searches.
+    URBAN_ROADS = 900
+    SUBURBAN_ROADS = 450
+
+    @classmethod
+    def setting(cls, stats: dict) -> str:
+        return cls.level(stats['roads'], cls.URBAN_ROADS, cls.SUBURBAN_ROADS,
+                         ('urban', 'suburban', 'rural'))
+
+    @classmethod
+    def _cache_key(cls, lat: float, lon: float) -> str:
+        # About a 100 m grid, so nearby lookups share an entry.
+        return f"locality_v{cls.STATS_VERSION}_{round(lat, 3)}_{round(lon, 3)}_{cls.RADIUS}"
+
+    @classmethod
+    def cached_stats(cls, lat: float, lon: float) -> Optional[dict]:
+        return OsmCache().get(cls._cache_key(lat, lon))
+
+    @staticmethod
+    def has_roads(result: dict) -> bool:
+        """Whether a street stats answer found roads: else no map data there."""
+        return int((result.get('elements') or [{}])[0].get('tags', {}).get('n', 0)) > 0
+
     def _street_query(self, lat: float, lon: float) -> str:
-        around = f"(around:{self.RADIUS},{lat},{lon})"
+        return f"[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];\n{self.street_statements(lat, lon)}"
+
+    @classmethod
+    def street_statements(cls, lat: float, lon: float) -> str:
+        """
+        Overpass statements that output the street stats around a point
+        (as "make" elements, roads first), also leaving the roads in the
+        set .roads. Can be followed by more statements in the same query.
+        """
+        around = f"(around:{cls.RADIUS},{lat},{lon})"
         side = '~"^cycleway(:both|:left|:right)?$"'
         calm_speed = '"^([1-9]|[12][0-9]|30)$|^([1-9]|1[0-9]|20) mph$"'
 
@@ -3091,8 +3392,7 @@ class OsmLocality:
             return f"(.{set_name};); make {label} n=count(ways),km=sum(length())/1000; out;"
 
         return f"""
-            [out:json][timeout:60];
-            way[highway~"^({self.ROADS})$"]{around}->.roads;
+            way[highway~"^({cls.ROADS})$"]{around}->.roads;
             way[highway=cycleway]{around}->.cycleways;
             way.cycleways[foot=designated][segregated!=yes]->.shared;
             (way.cycleways; - way.shared;)->.dedicated;
@@ -3117,6 +3417,7 @@ class OsmLocality:
             {length('speed_known', 'speed_known')}
         """
 
+    @log_step("street stats")
     def street_stats(self, lat: float, lon: float) -> Optional[dict]:
         """
         Street statistics around a point, by length: road network,
@@ -3125,34 +3426,37 @@ class OsmLocality:
         painted lanes, one-way roads, and calm streets (30 km/h or less,
         living streets, cycle streets).
         """
-        # About a 100 m grid, so nearby lookups share an entry.
-        cache_key = f"locality_v{self.STATS_VERSION}_{round(lat, 3)}_{round(lon, 3)}_{self.RADIUS}"
-        cached = self.cache.get(cache_key)
+        cached = self.cached_stats(lat, lon)
         if cached:
-            print(f"[OSM] Got street stats for {lat},{lon} from cache!")
+            log(f"Got street stats for {lat},{lon} from cache!")
             return cached
 
         headers = self.searcher.create_headers()
         if not headers:
             raise ValueError("Headers not set")
 
-        print(f"[OSM] Getting street stats around {lat},{lon}")
-        has_roads = lambda result: int(
-            (result.get('elements') or [{}])[0].get('tags', {}).get('n', 0)) > 0
-        response = self.searcher.overpass_get(self._street_query(lat, lon), headers, has_roads,
-                                              center={'lat': lat, 'lon': lon})
+        log(f"Getting street stats around {lat},{lon}")
+        response = self.searcher.overpass_get(self._street_query(lat, lon), headers,
+                                              self.has_roads, center={'lat': lat, 'lon': lon})
         if response.status_code != 200:
-            print(f"[OSM] Overpass error getting street stats: {response.text[:200]}")
+            log(f"Overpass error getting street stats: {response.text[:200]}")
             return None
 
-        measured = {element['type']: element.get('tags', {})
-                    for element in response.json().get('elements', [])}
+        return self.store_stats(lat, lon, response.json().get('elements', []))
+
+    @classmethod
+    def store_stats(cls, lat: float, lon: float, elements: List[dict]) -> Optional[dict]:
+        """
+        Street stats from the elements of an answer to street_statements
+        (other elements are ignored), cached. None without street data.
+        """
+        measured = {element['type']: element.get('tags', {}) for element in elements}
         roads = int(measured.get('roads', {}).get('n', 0))
         road_km = float(measured.get('roads', {}).get('km', 0))
         if roads == 0 or road_km == 0:
             # Outside the Overpass instance's coverage (e.g. a regional
             # extract), not a place without roads. Don't cache it.
-            print(f"[OSM] No roads found around {lat},{lon}: no street data there")
+            log(f"No roads found around {lat},{lon}: no street data there")
             return None
 
         share = lambda name: round(float(measured.get(name, {}).get('km', 0)) / road_km, 3)
@@ -3169,7 +3473,7 @@ class OsmLocality:
             'speed_known_share': share('speed_known'),
         }
 
-        self.cache.set(cache_key, stats, ttl=self.CACHE_SECONDS)
+        OsmCache().set(cls._cache_key(lat, lon), stats, ttl=cls.CACHE_SECONDS)
         return stats
 
     @staticmethod
@@ -3239,7 +3543,7 @@ class OsmLocality:
         except OverpassBusy:
             raise
         except Exception as e:
-            print(f"[OSM] Could not get street stats: {e}")
+            log(f"Could not get street stats: {e}")
             stats = None
 
         if not stats:
@@ -3315,7 +3619,7 @@ class OsmNavigator:
         try:
             result = router.calculate_route(start, destination, mode)
         except Exception as e:
-            print(f"[OSM] No {mode} route: {e}")
+            log(f"No {mode} route: {e}")
             self.failure = ors_failure_kind(e)
             return None
 
@@ -3476,7 +3780,7 @@ class OsmNavigator:
             await self.events.navigating(done=True)
             return result
         except Exception as e:
-            print(e)
+            log(f"Error: {e}")
             await self.events.navigation_error(e)
             message = (f"There are no results due to an error. "
                        "Tell the user that there was an error.")
@@ -3501,7 +3805,7 @@ def normalize_setting(setting: Optional[str]) -> str:
         if setting in ['urban', 'suburban', 'rural']:
             return setting
         else:
-            print(f"[OSM] WARN: {setting} is not a valid urban setting. Defaulting to 'urban'.")
+            log(f"WARN: {setting} is not a valid urban setting. Defaulting to 'urban'.")
             return 'urban'
 
     return 'urban'
@@ -3697,31 +4001,6 @@ def other_search_instructions(what: str, place: str) -> str:
         f"{NO_CITATION_LIST_PROHIBITION}"
     )
 
-async def resolve_setting(valves, events, place: str,
-                          setting: Optional[str]) -> str:
-    """
-    The urban setting for a search: the given one, or one derived from the
-    road density around the place (see OsmLocality). Urban if unknown.
-    """
-    if setting:
-        return normalize_setting(setting)
-
-    try:
-        locality = OsmLocality(valves, events)
-        result = await locality.searcher.nominatim_search(place, limit=1, quiet=True)
-        stats = (await asyncio.to_thread(locality.street_stats,
-                                         float(result[0]['lat']), float(result[0]['lon']))
-                 if result else None)
-        if stats:
-            setting = OsmLocality.level(stats['roads'], 900, 450, ('urban', 'suburban', 'rural'))
-            print(f"[OSM] Setting for {place}: {setting} ({stats['roads']} roads nearby)")
-            return setting
-    except Exception as e:
-        print(f"[OSM] Could not determine the setting for {place}: {e}")
-
-    return 'urban'
-
-
 # EV charger mappings, moved out of original function for readability.
 EV_CHARGER_TOOL_INPUT_CHARGER_TYPES = {
     "chademo": "chademo",
@@ -3782,20 +4061,19 @@ class Tools:
             default=None,
             description="Use a custom ORS instance (leave default to use public ORS instance)."
         )
-        fallback_to_public_instances: bool = Field(
-            default=False,
-            description=("Off by default. When a custom Nominatim, Overpass or ORS instance returns an "
-                         "error or no data (e.g. outside its map area), retry on the public instance. "
-                         "ORS fallback uses ors_fallback_api_key, or ors_api_key if that's empty.")
-        )
-        ors_fallback_api_key: Optional[str] = Field(
+        ors_public_api_key: Optional[str] = Field(
             default=None,
-            description=("API key for the public ORS when falling back from a custom ORS "
-                         "instance. If empty, ors_api_key is used.")
+            description=("API key for the public ORS instance (api.openrouteservice.org), as "
+                         "the main instance or a fallback. If empty, ors_api_key is used.")
         )
-        status_indicators: bool = Field(
-            default=True,
-            description=("Emit status update events to the web UI.")
+        public_fallbacks: List[str] = Field(
+            default=[url for instances in PUBLIC_INSTANCES.values() for url in instances],
+            description=("Public instances to try, in the order listed, when the main Overpass, "
+                         "Nominatim or ORS instance errors, is busy, or has no data for the place "
+                         "(e.g. outside its map area). Untick them to keep queries off public "
+                         "servers. Custom instances go in the URL settings above. The public ORS "
+                         "uses ors_public_api_key, or ors_api_key if that's empty."),
+            json_schema_extra=public_fallback_options()
         )
         include_raw_osm_data: bool = Field(
             default=False,
@@ -3826,8 +4104,8 @@ class Tools:
         :param near: Optional place or 'lat,lon' coordinates to search around.
         :return: Information about the place, if found.
         """
+        log_call("find_place", place_or_coordinates=place_or_coordinates, near=near)
         query = f"{place_or_coordinates} {near}" if near else place_or_coordinates
-        print(f"[OSM] Searching for info on [{query}].")
         events = OsmEventEmitter(__event_emitter__)
         searcher = OsmSearcher(self.valves, events)
 
@@ -3848,7 +4126,7 @@ class Tools:
             else:
                 return NO_RESULTS
         except Exception as e:
-            print(e)
+            log(f"Error: {e}")
             return (f"There are no results due to an error. "
                     "Tell the user that there was an error. "
                     f"The error was: {e}. "
@@ -3871,7 +4149,8 @@ class Tools:
         :param travel_mode: 'car', 'bike', or 'walk'. Only set this if the user asked for a specific way of traveling (driving, cycling, walking). Otherwise leave it empty, and a mode is chosen by distance.
         :return: The navigation route and associated info, if found.
         """
-        print(f"[OSM] Navigating from [{start_address_or_place}] to [{destination_address_or_place}] ({travel_mode or 'auto'}).")
+        log_call("navigate_between_places", start=start_address_or_place,
+                 destination=destination_address_or_place, travel_mode=travel_mode)
         events = OsmEventEmitter(__event_emitter__)
         navigator = OsmNavigator(self.valves, events)
         return await navigator.navigate(
@@ -3889,7 +4168,7 @@ class Tools:
         :param place: The name of a place, an address, or GPS coordinates.
         :return: Information about the locality.
         """
-        print(f"[OSM] Getting locality info for [{place}].")
+        log_call("find_locality_info", place=place)
         events = OsmEventEmitter(__event_emitter__)
         locality = OsmLocality(self.valves, events)
 
@@ -3900,10 +4179,10 @@ class Tools:
 
             return {"instructions": locality_instructions(), **info}
         except OverpassBusy as e:
-            print(e)
+            log(f"Error: {e}")
             return rate_limited(e)
         except Exception as e:
-            print(e)
+            log(f"Error: {e}")
             return (f"There are no results due to an error. "
                     "Tell the user that there was an error. "
                     f"The error was: {e}. "
@@ -3927,6 +4206,7 @@ class Tools:
         :param setting: Optional: whether the place is urban, suburban, or rural (controls the search radius). Leave empty to determine it automatically.
         :return: A list of nearby places, if found.
         """
+        log_call("find_nearby", place=place, what=what, what_else=what_else, setting=setting)
         if what == 'other':
             return await self._find_other_near_place(place, what_else, __event_emitter__)
 
@@ -3936,9 +4216,7 @@ class Tools:
 
         category, to_tags, radius, limit = search
         tags, not_tag_groups = to_tags(category)
-        events = OsmEventEmitter(__event_emitter__)
-        setting = await resolve_setting(self.valves, events, place, setting)
-
+        setting = normalize_setting(setting) if setting else None
         return await do_osm_search(valves=self.valves, category=category,
                                    radius=radius, limit=limit, setting=setting, place=place, tags=tags,
                                    event_emitter=__event_emitter__, not_tag_groups=not_tag_groups)
@@ -3959,7 +4237,7 @@ class Tools:
             }
 
         query = f"{what} near {place}"
-        print(f"[OSM] General search for [{query}].")
+        log(f"General search for [{query}].")
         events = OsmEventEmitter(__event_emitter__)
         searcher = OsmSearcher(self.valves, events)
 
@@ -3968,7 +4246,7 @@ class Tools:
         except ValueError:
             return NO_RESULTS
         except Exception as e:
-            print(e)
+            log(f"Error: {e}")
             return (f"There are no results due to an error. "
                     "Tell the user that there was an error. "
                     f"The error was: {e}. "
@@ -4006,8 +4284,10 @@ class Tools:
         :param setting: Optional: whether the place is urban, suburban, or rural (controls the search radius). Leave empty to determine it automatically.
         :return: A list of nearby places of worship, if found.
         """
-        events = OsmEventEmitter(__event_emitter__)
-        setting = await resolve_setting(self.valves, events, place, setting)
+        log_call("find_place_of_worship_near_place", place=place, religion=religion,
+                 denomination=denomination, is_common_for_area=is_common_for_area,
+                 setting=setting)
+        setting = normalize_setting(setting) if setting else None
 
         # by default, look for all places of worship.
         tags = ["amenity=place_of_worship"]
@@ -4053,13 +4333,16 @@ class Tools:
         :param ev_charger_type: Type of EV charger to search for.
         :return: A list of nearby fueling stations, if found.
         """
+        log_call("find_fuel_or_charging_by_category_near_place", place=place,
+                 category=category, fuel_type=fuel_type, ev_charger_type=ev_charger_type,
+                 setting=setting)
         allowed_categories = ["fossil_fuels", "ev_fast_charging"]
         validation_error = validate_category(category, allowed_categories)
         if validation_error:
             return validation_error
 
         if category == "fossil_fuels":
-            print(f"[OSM] WARN: Currently ignoring fuel type parameter (was '{fuel_type}')")
+            log(f"WARN: Currently ignoring fuel type parameter (was '{fuel_type}')")
             tags = ["amenity=fuel"]
         else:
             charger_type = ev_charger_type.lower().replace('"', "").replace("'", "")
@@ -4074,8 +4357,7 @@ class Tools:
                     "error_message": f"{charger_type} is not a valid charger type."
                 }
 
-        events = OsmEventEmitter(__event_emitter__)
-        setting = await resolve_setting(self.valves, events, place, setting)
+        setting = normalize_setting(setting) if setting else None
         return await do_osm_search(valves=self.valves, category=category,
                                    setting=setting, radius=10000, place=place, tags=tags,
                                    event_emitter=__event_emitter__)
@@ -4089,6 +4371,7 @@ class Tools:
         :param route_id: The route_id returned by navigate_between_places.
         :return: HTML for displaying the route map.
         """
+        log_call("show_route_map", route_id=route_id)
         saved = OsmCache().get(f"route_map_{str(route_id).strip()}")
         if not saved:
             return {
@@ -4122,6 +4405,7 @@ class Tools:
         :param results: Point of Interest (POI) results from a previous function call.
         :return: HTML for displaying a search results map.
         """
+        log_call("show_poi_map", category=category, results=len(results))
         pois, problems = normalize_map_pois(results)
         if not pois:
             return {

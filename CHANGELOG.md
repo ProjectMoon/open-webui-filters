@@ -9,15 +9,86 @@
 
 # OpenStreetMap Tool
 
-**5.2.1:**
- - When Overpass is rate limiting, the model is told how long to wait:
+**5.3.0:**
+ - **Breaking:** `fallback_to_public_instances` is replaced by
+   `public_fallbacks`, a checkbox list of the public instances to fall
+   back to, labeled by service. All are ticked by default, and the old
+   setting isn't carried over. Custom instances go in the main URL
+   settings, as before.
+   - Overpass: overpass-api.de (FOSSGIS) and overpass.private.coffee.
+     Nominatim: nominatim.openstreetmap.org. ORS:
+     api.openrouteservice.org.
+   - Fallbacks are tried after the main instance, in the order listed
+     (not the order ticked). One on the same host as the main instance
+     is skipped, so a public main instance can fall back to the other
+     public one.
+ - **Breaking:** `ors_fallback_api_key` is renamed to
+   `ors_public_api_key`, and is used for the public ORS whether it's the
+   main instance or a fallback. If empty, `ors_api_key` is used. The old
+   value isn't carried over.
+ - **Breaking:** removed the Status Indicators setting. It had no
+   effect: status updates were always shown, and still are.
+ - `find_nearby` and the other nearby searches get the street stats
+   and the results in one Overpass query when the stats aren't cached,
+   instead of two. The query picks the search radius (urban, suburban,
+   rural) from the road count itself. The stats and the results are
+   cached as before, so later searches, `find_locality_info`,
+   navigation and travel distances still find them. The stats are now
+   taken at the search center, the same point the travel distances use,
+   so one search no longer fetches them twice.
+ - A hung Overpass instance (no answer within 75 s, or no connection)
+   counts as busy, like a 502: it's skipped by later calls until its
+   wait is over. It used to cost every call the full 90 s timeout.
+   Queries ask the server for a 30 s timeout (the POI search used to
+   ask for none, i.e. 180 s).
+ - Log lines say which tool call and step they come from, e.g.
+   `[OSM 3fa1 find_nearby > pois > overpass]`: a short ID per tool call
+   (to pick out one call's lines when calls run at the same time), then
+   the steps that led to the line. Each tool call starts with a line
+   showing its arguments. Overpass queries are logged as a one-line
+   summary instead of the full query. ORS distance matrices log how many
+   destinations each instance routed.
+ - Overpass answers "no data" (an instance without map data for the
+   place) only when every instance says so. If another instance failed,
+   the search fails too (with the wait time, if one was busy), instead
+   of reporting that there's nothing there. Before giving up, instances
+   that answered busy are asked once more, as their wait may be over by
+   then; hung ones aren't.
+ - An Overpass answer that Overpass itself cut short (its query
+   timeout or memory limit, reported in a "runtime error" remark on an
+   otherwise normal answer) counts as a failure: the next instance is
+   tried, and the partial results aren't cached or reported as "nothing
+   found".
+ - A busy Overpass instance is skipped at once when another instance is
+   left to try; only the last one sleeps off a short wait. If every
+   instance fails and some were busy, the model is told the shortest
+   wait.
+ - An empty result from a public Overpass instance is taken as the
+   answer without a coverage check: they have worldwide data.
+ - The one-request-at-a-time lock is per Overpass host
+   (`osm-overpass-<host>.lock` in the temp directory), so a fallback
+   doesn't queue behind a slow main instance.
+ - When Overpass is busy or rate limiting, the model is told how long to wait:
    the result has `retry_after_seconds`, `retry_at` (UTC), and
    instructions not to call it, or other nearby-search tools, again
    before then.
    This covers POI searches and `find_locality_info` (which used to
    report bike friendliness as unknown instead).
- - A second rate limit after waiting out a short Retry-After now fails
-   with the wait time, instead of passing on Overpass's error page.
+ - Overpass 502, 503 and 504 answers count as busy, with or without
+   Retry-After. The public instance answers 502 "at capacity" when its
+   queue is full, which used to reach the model as a plain error.
+ - Without Retry-After, the wait doubles on each busy answer in a row
+   (10 s, 20 s, 40 s, ... up to 5 minutes), as Overpass asks. It starts
+   over at 10 s after a successful request or a quiet spell.
+ - A second busy answer after waiting out a short wait now fails with
+   the wait time, instead of passing on Overpass's error page.
+ - The log says when and how long the tool waits for Overpass: busy
+   answers (with the wait, the time it ends, and whether it came from
+   Retry-After or backoff), waits slept off, requests not sent because
+   the wait is too long, backoff resets, and waits for another tool
+   call's Overpass request to finish. Each Overpass request logs how
+   long the answer took (the public instance can take half a minute or
+   more when it's queueing queries), or how long until it failed.
 
 **5.2.0:**
  - Removed the Instruction Oriented Interpretation setting (valve and

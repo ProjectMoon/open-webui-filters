@@ -84,7 +84,7 @@ _No testing is currently done with ollama._
      - 🚗 Driving navigation
    - Ask for a specific travel mode ("by bike", "walking"), or let the tool
      choose from the locality and distance: walking up to 1.5 km (via the
-     public ORS if fallback is on and your ORS has no walking profile;
+     public ORS if it's ticked as a fallback and your ORS has no walking profile;
      otherwise bike or car, depending on the area);
      between 1.5 and 15 km it compares bike and car travel times, favoring
      the bike in places with lots of separated cycle paths; car beyond
@@ -111,20 +111,30 @@ _No testing is currently done with ollama._
   - Used for querying OpenStreetMap for POIs.
 
 ### 🔄 Advanced Options
-- **Status Indicators**: Shows real-time tool activity in the UI.
 - **ORS API Key**: Required for navigation and acccurate distance calculations.
   - Sign up at [OpenRouteService](https://openrouteservice.org/) and input the key in the tool settings.
 - **ORS Instance**:
   - Default: Public ORS instance (`https://api.openrouteservice.org`).
   - Can be changed to a custom ORS instance if self-hosted.
-- **Fallback to Public Instances** (**off by default**):
-  - For self-hosted Nominatim, Overpass or ORS instances that only cover part of the
-    world. When on, requests your instance can't answer (errors, or no data
-    outside its map area) are retried on the public instance.
-  - With it off, the tool log says so whenever a fallback would have been
-    tried: `(public fallback is off: see fallback_to_public_instances)`.
-- **ORS Fallback API Key**: key for the public ORS when falling back. If
-  empty, the regular ORS API key is used.
+- **Public Fallbacks** (**all ticked by default**):
+  - Checkboxes of public instances to fall back to, labeled by service:
+    - Overpass: overpass-api.de (FOSSGIS), overpass.private.coffee
+    - Nominatim: nominatim.openstreetmap.org
+    - ORS: api.openrouteservice.org (needs an API key)
+  - Requests the main instance can't answer (errors, busy, or no data
+    outside its map area) are retried on the ticked instances, in the
+    order listed. A busy Overpass instance is skipped while another is
+    left to try.
+  - Useful for self-hosted instances that only cover part of the world,
+    and for falling back from one public Overpass instance to the other.
+    Custom instances go in the main URL settings.
+  - Untick them to keep queries off public servers, e.g. for a
+    self-hosted setup. With a custom instance and nothing ticked, the tool log says so
+    whenever a fallback would have been tried, e.g.
+    `(no fallback: see public_fallbacks)`.
+- **ORS Public API Key**: key for the public ORS instance
+  (api.openrouteservice.org), whether it's the main instance or a
+  fallback. If empty, the regular ORS API key is used.
 
 ---
 
