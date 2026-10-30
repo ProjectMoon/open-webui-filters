@@ -9,6 +9,16 @@
 
 # OpenStreetMap Tool
 
+**5.2.1:**
+ - When Overpass is rate limiting, the model is told how long to wait:
+   the result has `retry_after_seconds`, `retry_at` (UTC), and
+   instructions not to call it, or other nearby-search tools, again
+   before then.
+   This covers POI searches and `find_locality_info` (which used to
+   report bike friendliness as unknown instead).
+ - A second rate limit after waiting out a short Retry-After now fails
+   with the wait time, instead of passing on Overpass's error page.
+
 **5.2.0:**
  - Removed the Instruction Oriented Interpretation setting (valve and
    user valve). Results always use the simple instructions.

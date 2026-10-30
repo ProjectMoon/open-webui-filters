@@ -2,7 +2,7 @@
 title: OpenStreetMap Tool
 author: projectmoon
 author_url: https://git.agnos.is/projectmoon/open-webui-filters
-version: 5.2.0
+version: 5.2.1
 license: AGPL-3.0+
 required_open_webui_version: 0.12.5
 requirements: openrouteservice, pygments
@@ -1088,7 +1088,11 @@ OVERPASS_MAX_WAIT = 15        # seconds; longer waits fail (or fall back)
 OVERPASS_DEFAULT_BACKOFF = 10 # seconds, for a 429 without Retry-After
 
 class OverpassBusy(Exception):
-    pass
+    """An Overpass host is rate limiting: ask again in retry_after seconds."""
+    def __init__(self, host: str, retry_after: float):
+        self.host = host
+        self.retry_after = max(1, math.ceil(retry_after))
+        super().__init__(f"{host} is rate limiting: retry in {self.retry_after}s")
 
 class OverpassLock:
     def __enter__(self):
@@ -1121,17 +1125,17 @@ def overpass_request(url: str, query: str, headers: dict, timeout: int) -> reque
     Send one Overpass query, one request at a time across tool calls,
     honoring Retry-After. A 429 (or a 503/504 with Retry-After) records
     when the host may be asked again. Short waits are slept off and the
-    request is retried once; longer ones raise OverpassBusy.
+    request is retried once; longer ones, or a second rate limit, raise
+    OverpassBusy.
     """
     host = api_host(url)
     key = f"overpass_retry_after_{host}"
 
     with OverpassLock():
-        response = None
         for attempt in range(2):
             wait = (OsmCache().get(key) or 0) - time.time()
             if wait > OVERPASS_MAX_WAIT:
-                raise OverpassBusy(f"{host} is rate limiting: retry in {round(wait)}s")
+                raise OverpassBusy(host, wait)
             if wait > 0:
                 print(f"[OSM] Waiting {round(wait)}s before asking {host} (Retry-After)")
                 time.sleep(wait)
@@ -1148,7 +1152,24 @@ def overpass_request(url: str, query: str, headers: dict, timeout: int) -> reque
             print(f"[OSM] {host} is rate limiting (HTTP {response.status_code}), "
                   f"retry after {round(delay)}s")
 
-        return response
+        raise OverpassBusy(host, delay)
+
+def rate_limited(error: OverpassBusy) -> dict:
+    """Result for the model when Overpass is rate limiting: when to try again."""
+    retry_at = datetime.fromtimestamp(time.time() + error.retry_after, timezone.utc)
+    return {
+        "results": [],
+        "retry_after_seconds": error.retry_after,
+        "retry_at": retry_at.isoformat(timespec='seconds'),
+        "instructions": (
+            f"No results: the OpenStreetMap data service ({error.host}) is "
+            f"rate limiting requests. Wait {error.retry_after} seconds (until "
+            f"{retry_at.strftime('%H:%M:%S')} UTC) before calling this tool, or "
+            f"other tools that search for nearby places, again: calling sooner "
+            f"fails the same way. Tell the user the service is busy and how long until it "
+            f"can be asked again. Do not make up results."
+        ),
+    }
 
 def api_host(url: str) -> str:
     """Host of an API URL, for logging which instance a request goes to."""
@@ -2991,6 +3012,10 @@ class OsmSearcher:
         except ValueError:
             await self.events.search_complete(readable_category, place_display_name, [])
             return { "place_display_name": place_display_name, "results": NO_RESULTS, "things": [] }
+        except OverpassBusy as e:
+            print(e)
+            await self.events.error(e)
+            return { "place_display_name": place_display_name, "results": rate_limited(e), "things": [] }
         except Exception as e:
             print(e)
             await self.events.error(e)
@@ -3211,6 +3236,8 @@ class OsmLocality:
 
         try:
             stats = self.street_stats(float(thing['lat']), float(thing['lon']))
+        except OverpassBusy:
+            raise
         except Exception as e:
             print(f"[OSM] Could not get street stats: {e}")
             stats = None
@@ -3872,6 +3899,9 @@ class Tools:
                 return NO_RESULTS
 
             return {"instructions": locality_instructions(), **info}
+        except OverpassBusy as e:
+            print(e)
+            return rate_limited(e)
         except Exception as e:
             print(e)
             return (f"There are no results due to an error. "
